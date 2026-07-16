@@ -1,0 +1,5 @@
+./dataset/44k/luo/Voice_95.wav|luo
+./dataset/44k/luo/Voice_96.wav|luo
+./dataset/44k/luo/Voice_97.wav|luo
+./dataset/44k/luo/Voice_98.wav|luo
+./dataset/44k/luo/Voice_99.wav|luo

@@ -1,0 +1,2 @@
+./dataset/44k/rongrong/huimaqing_0010.wav
+./dataset/44k/rongrong/tianshidechibang_0023.wav

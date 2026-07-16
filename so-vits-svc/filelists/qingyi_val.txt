@@ -1,0 +1,2 @@
+./dataset/44k/qingyi/rulexinderen_7.wav
+./dataset/44k/qingyi/meilixinqing_20.wav

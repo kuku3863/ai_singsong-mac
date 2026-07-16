@@ -1,0 +1,52 @@
+# ============================================================
+# AI 翻唱统一系统 - Python 依赖
+# RVC + So-VITS-SVC 双引擎 | Apple Silicon GPU (MPS) 加速
+# ============================================================
+
+# ── PyTorch (Apple Silicon MPS / CUDA) ──
+torch>=2.0.0
+torchaudio>=2.0.0
+
+# ── Audio Processing ──
+numpy>=1.21.0
+scipy>=1.7.0
+librosa>=0.9.0
+soundfile>=0.11.0
+pydub>=0.25.0
+pedalboard>=0.7.0
+
+# ── F0 Pitch Extraction ──
+pyworld>=0.3.0
+praat-parselmouth>=1.0.0
+torchcrepe>=0.0.0
+
+# ── Feature Extraction & Models ──
+fairseq>=0.12.0
+faiss-cpu>=1.7.0
+scikit-learn>=1.0.0
+
+# ── ONNX Runtime ──
+onnxruntime>=1.12.0
+
+# ── Web UI ──
+gradio>=3.40.0
+
+# ── Utilities ──
+resampy>=0.2.0
+tqdm>=4.62.0
+pyyaml>=6.0
+python-dotenv>=0.20.0
+matplotlib>=3.5.0
+tensorboard>=2.10.0
+transformers>=4.20.0
+omegaconf>=2.0.0
+ml-collections>=1.0.0
+einops>=0.8.0
+beartype>=0.18.0
+rotary-embedding-torch>=0.8.0
+
+# ── SVC Specific ──
+av>=10.0.0
+
+# ── Audio Tools ──
+ffmpeg-python>=0.2.0

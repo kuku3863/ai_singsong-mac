@@ -1,0 +1,3803 @@
+import warnings
+# Filter warnings immediately to keep logs clean
+warnings.filterwarnings("ignore")
+
+import gradio as gr
+import gradio.utils as gr_utils
+import html as html_lib
+import os
+import sys
+import glob
+import subprocess
+import threading
+import time
+import datetime
+import soundfile
+import librosa
+import numpy as np
+import logging
+import shutil
+import re
+import edge_tts
+import asyncio
+from inference.infer_tool import Svc
+# from vits_pinyin import VITS_PinYin # Remove missing module
+import json
+import ctypes
+import torch
+try:
+    import winsound
+except ImportError:
+    winsound = None
+import yaml
+import tempfile
+import gc
+import vad_slicer
+
+def get_best_device():
+    """返回最佳可用设备：cuda -> mps -> cpu"""
+    if torch.cuda.is_available():
+        return 'cuda'
+    elif torch.backends.mps.is_available():
+        return 'mps'
+    else:
+        return 'cpu'
+
+from pedalboard import Pedalboard, Reverb, Delay, HighpassFilter, LowpassFilter, PeakFilter, Compressor
+from uvr5.vr import AudioPre
+from urllib.parse import quote
+
+logging.getLogger('numba').setLevel(logging.WARNING)
+
+# Edge-TTS Speakers
+EDGE_TTS_SPEAKERS = [
+    ("晓晓 (女)", "zh-CN-XiaoxiaoNeural"),
+    ("晓伊 (女)", "zh-CN-XiaoyiNeural"),
+    ("云希 (男)", "zh-CN-YunxiNeural"),
+    ("云健 (男)", "zh-CN-YunjianNeural"),
+    ("云夏 (男)", "zh-CN-YunxiaNeural"),
+    ("晓北 (女)", "zh-CN-XiaobeiNeural"),
+    ("晓真 (女)", "zh-CN-XiaozhenNeural"),
+    ("晓睿 (女)", "zh-CN-XiaoruiNeural"),
+    ("晓双 (女)", "zh-CN-XiaoshuangNeural"),
+    ("晓秋 (女)", "zh-CN-XiaoqiuNeural"),
+    ("晓宣 (女)", "zh-CN-XiaoxuanNeural"),
+    ("晓墨 (女)", "zh-CN-XiaomoNeural"),
+    ("晓颜 (女)", "zh-CN-XiaoyanNeural"),
+    ("晓幽 (女)", "zh-CN-XiaoyouNeural"),
+    ("晓涵 (女)", "zh-CN-XiaohanNeural"),
+    ("晓梦 (女)", "zh-CN-XiaomengNeural"),
+    ("晓臻 (女)", "zh-CN-XiaozhenNeural"),
+    ("晓路 (女)", "zh-CN-XiaoluNeural"),
+    ("晓妮 (女)", "zh-CN-XiaoniNeural"),
+    ("晓雨 (女)", "zh-CN-XiaoyuNeural"),
+    ("晓雯 (女)", "zh-CN-XiaowenNeural"),
+    ("晓悠 (女)", "zh-CN-XiaoyouNeural"),
+    ("晓辰 (女)", "zh-CN-XiaochenNeural"),
+    ("晓瑞 (女)", "zh-CN-XiaoruiNeural"),
+    ("晓月 (女)", "zh-CN-XiaoyueNeural"),
+    ("晓雪 (女)", "zh-CN-XiaoxueNeural"),
+    ("晓雨 (女)", "zh-CN-XiaoyuNeural"),
+    ("云泽 (男)", "zh-CN-YunzeNeural"),
+    ("云登 (男)", "zh-CN-YundengNeural"),
+    ("云帆 (男)", "zh-CN-YunfanNeural"),
+    ("云翔 (男)", "zh-CN-YunxiangNeural"),
+    ("云龙 (男)", "zh-CN-YunlongNeural"),
+    ("云飞 (男)", "zh-CN-YunfeiNeural"),
+    ("云柯 (男)", "zh-CN-YunkeNeural"),
+    ("云希 (男)", "zh-CN-YunxiNeural"),
+]
+
+# Global variables
+current_model = None
+loading_lock = threading.Lock()
+tts_model = None
+training_process = None
+diffusion_training_process = None
+monitoring_process = None
+last_vocal_output = None  # Store path to the last generated vocal (wav)
+last_bgm_path = None      # Store path to the last used bgm
+last_harmony_path = None  # Store path to the last used harmony
+current_training_info = {
+    "project_name": "44k",
+    "batch_size": 8,
+    "num_workers": 0,
+    "all_in_mem": False
+}
+current_diffusion_info = {
+    "project_name": "44k",
+    "batch_size": 8,
+    "num_workers": 2
+}
+model_load_state = {
+    "status": "idle",
+    "message": "就绪",
+    "spk_list": [],
+    "selected_spk": None,
+    "version": 0,
+    "last_reported_version": -1,
+}
+
+# Helper Functions
+def save_model_config(project_name, model_path, diff_model_path, diff_config_path, spk_list):
+    config = {
+        "project_name": project_name,
+        "model_path": model_path,
+        "diff_model_path": diff_model_path,
+        "diff_config_path": diff_config_path,
+        "spk_list": spk_list,
+        "timestamp": time.time()
+    }
+    try:
+        with open("webui_model_config.json", "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        print(f" [Config] Failed to save model config: {e}")
+        return False
+
+def load_model_config():
+    config_path = "webui_model_config.json"
+    if not os.path.exists(config_path):
+        return None
+    
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        
+        # Validate required fields
+        required = ["project_name", "model_path"]
+        for field in required:
+            if field not in config:
+                print(f" [Config] Missing required field: {field}")
+                return None
+        
+        # Check if model file still exists
+        if not os.path.exists(config["model_path"]):
+            print(f" [Config] Model file not found: {config['model_path']}")
+            return None
+        
+        return config
+    except Exception as e:
+        print(f" [Config] Failed to load model config: {e}")
+        return None
+
+def get_system_info():
+    # RAM
+    ram_gb = 0
+    try:
+        if os.name == 'nt':
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ('dwLength', ctypes.c_ulong),
+                    ('dwMemoryLoad', ctypes.c_ulong),
+                    ('ullTotalPhys', ctypes.c_ulonglong),
+                    ('ullAvailPhys', ctypes.c_ulonglong),
+                    ('ullTotalPageFile', ctypes.c_ulonglong),
+                    ('ullAvailPageFile', ctypes.c_ulonglong),
+                    ('ullTotalVirtual', ctypes.c_ulonglong),
+                    ('ullAvailVirtual', ctypes.c_ulonglong),
+                    ('ullAvailExtendedVirtual', ctypes.c_ulonglong),
+                ]
+            stat = MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(stat)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
+            ram_gb = round(stat.ullTotalPhys / (1024**3), 1)
+        else:
+            # Linux/Mac fallback (simple approximation)
+            ram_gb = 8 
+    except:
+        ram_gb = 0
+
+    # VRAM
+    vram_gb = 0
+    gpu_name = "CPU"
+    try:
+        if torch.cuda.is_available():
+            props = torch.cuda.get_device_properties(0)
+            vram_gb = round(props.total_memory / (1024**3), 1)
+            gpu_name = torch.cuda.get_device_name(0)
+        elif torch.backends.mps.is_available():
+            gpu_name = "Apple M5 GPU (MPS)"
+            # MPS uses shared memory, estimate based on system RAM
+            vram_gb = 8  # Conservative estimate for shared memory
+    except:
+        pass
+        
+    return ram_gb, vram_gb, gpu_name
+
+def get_presets_logic():
+    ram, vram, gpu = get_system_info()
+    
+    # 强制执行【金标准】训练配置：Batch Size = 2，关闭 FP16，确保音质与咬字
+    presets = {
+        "office": {"bs": 4, "nw": 0, "aim": False, "desc": "🐢 办公模式 (Office): CPU占用极低。"},
+        "balanced": {"bs": 6, "nw": 0, "aim": False, "desc": "⚖️ 均衡模式 (Balanced): 推荐配置。"},
+        "high": {"bs": 8, "nw": 2, "aim": False, "desc": "🚀 全速模式 (High): 增加预取线程以加快速度。"}
+    }
+    
+    # Dynamic Adjustments - 已锁定 BS=2，不再根据显存动态增加 BS 以确保质量
+    if vram < 4:
+        presets["office"]["bs"] = 1 # 极低显存强制 BS=1
+        presets["balanced"]["bs"] = 1
+        presets["high"]["bs"] = 1
+    elif vram < 6:
+        presets["office"]["bs"] = 2
+        presets["balanced"]["bs"] = 4
+        presets["high"]["bs"] = 4
+
+    # Worker logic (RAM/CPU bound)
+    cpu_count = os.cpu_count() or 4
+    if ram >= 30:
+        presets["high"]["nw"] = min(8, cpu_count)
+        presets["balanced"]["nw"] = 4
+    elif ram >= 14: # 16GB
+        presets["high"]["nw"] = min(4, cpu_count) # 4 workers might be heavy for 16GB if Chrome is open
+        presets["balanced"]["nw"] = 2
+    else:
+        presets["high"]["nw"] = 2
+        presets["balanced"]["nw"] = 0
+        
+    return presets, ram, vram, gpu
+
+def get_projects():
+    # Projects are defined by directories in logs/
+    if not os.path.exists("logs"):
+        os.makedirs("logs")
+    projects = [
+        d for d in os.listdir("logs")
+        if os.path.isdir(os.path.join("logs", d)) and not d.startswith(".")
+    ]
+    projects = sorted(projects)
+    if not projects:
+        projects = ["44k", "rongrong"]
+    return projects
+
+def _get_model_steps(model_path):
+    try:
+        return int(os.path.basename(model_path).split("_")[-1].split(".")[0])
+    except:
+        return 0
+
+def get_latest_model(project_name="44k"):
+    models = [m for m in glob.glob(f"logs/{project_name}/G_*.pth") if _get_model_steps(m) > 0]
+    if not models:
+        return None
+    # Sort by step count
+    models.sort(key=_get_model_steps, reverse=True)
+    return models[0]
+
+def get_latest_checkpoint_info(project_name):
+    latest = get_latest_model(project_name)
+    if not latest:
+        return f"项目 {project_name}: 未找到已有 G_*.pth 权重"
+    step = _get_model_steps(latest)
+    try:
+        mtime = datetime.datetime.fromtimestamp(os.path.getmtime(latest)).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        mtime = "未知时间"
+    return f"项目 {project_name}: 最高已有权重 {os.path.basename(latest)} (step {step}, 更新时间 {mtime})"
+
+def read_training_log_tail(project_name, lines=80):
+    log_path = os.path.join("logs", project_name, "train.log")
+    if not os.path.exists(log_path):
+        return f"暂无训练日志: {log_path}"
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+            data = f.readlines()
+        return "".join(data[-int(lines):]).strip() or f"日志为空: {log_path}"
+    except Exception as e:
+        return f"读取训练日志失败: {e}"
+
+def get_training_progress_summary(project_name):
+    latest_info = get_latest_checkpoint_info(project_name)
+    tail = read_training_log_tail(project_name, lines=80)
+    last_step_line = None
+    last_save_line = None
+    for line in tail.splitlines():
+        if "Step:" in line and "Loss:" in line:
+            last_step_line = line
+        if "Saving model" in line and "G_" in line:
+            last_save_line = line
+    summary = latest_info
+    if last_step_line:
+        summary += f"\n最近训练记录: {last_step_line}"
+    if last_save_line:
+        summary += f"\n最近保存记录: {last_save_line}"
+    summary += f"\n\n--- train.log 尾部 ---\n{tail}"
+    return summary
+
+def get_diffusion_models(project_name="44k"):
+    # Look for diffusion folder in logs/project_name/diffusion/model_*.pt
+    diff_dir = f"logs/{project_name}/diffusion"
+    if not os.path.exists(diff_dir):
+        return []
+    models = glob.glob(os.path.join(diff_dir, "model_*.pt"))
+    # Sort
+    def get_steps(f):
+        try: return int(f.split("_")[-1].split(".")[0])
+        except: return 0
+    models.sort(key=get_steps, reverse=True)
+    return models
+
+def get_vocoder_options():
+    pretrain_dir = "pretrain"
+    if not os.path.exists(pretrain_dir):
+        return []
+    options = []
+    for d in os.listdir(pretrain_dir):
+        full = os.path.join(pretrain_dir, d)
+        if os.path.isdir(full):
+            model_path = os.path.join(full, "model")
+            config_path = os.path.join(full, "config.json")
+            if os.path.exists(model_path) and os.path.exists(config_path):
+                options.append(d)
+    return sorted(set(options))
+
+def resolve_vocoder_name(vocoder_name):
+    options = get_vocoder_options()
+    if vocoder_name in options:
+        return vocoder_name
+    if "nsf_hifigan_finetuned" in options:
+        return "nsf_hifigan_finetuned"
+    if "nsf_hifigan" in options:
+        return "nsf_hifigan"
+    if len(options) > 0:
+        return options[0]
+    return None
+
+def get_raw_dataset_dirs():
+    if not os.path.exists("dataset_raw"):
+        return []
+    # Filter out backup folders and non-directories
+    dirs = [
+        d for d in os.listdir("dataset_raw")
+        if os.path.isdir(os.path.join("dataset_raw", d))
+        and not d.startswith(".")
+        and "_backup" not in d
+        and not d.endswith("_original_backup")
+    ]
+    return sorted(dirs)
+
+def match_datasets_by_project(project_name):
+    """
+    Smartly select dataset folders based on the project name.
+    """
+    dirs = get_raw_dataset_dirs()
+    if not project_name:
+        return []
+    
+    selected = []
+    p_name = project_name.lower()
+    
+    for d in dirs:
+        d_lower = d.lower()
+        # Logic: If folder name is part of project name (e.g. 'rongrong' in 'singsong_rongrong')
+        # OR if project name is part of folder name (unlikely but possible)
+        if d_lower in p_name or p_name in d_lower:
+            selected.append(d)
+            
+    return selected
+
+def get_project_training_filelists(project_name):
+    if project_name == "44k":
+        return "filelists/train_luo.txt", "filelists/val_luo.txt"
+    if project_name == "rongrong":
+        return "filelists/rongrong_train.txt", "filelists/rongrong_val.txt"
+    return f"filelists/{project_name}_train.txt", f"filelists/{project_name}_val.txt"
+
+def get_project_locked_dataset_dirs(project_name):
+    if project_name == "44k":
+        return ["luo"]
+    if project_name == "rongrong":
+        return ["rongrong"]
+    if project_name:
+        return [project_name]
+    return None
+
+def load_svc_model(model_path, config_path, diff_model_path, diff_config_path, only_diffusion, shallow_diffusion, vocoder_name):
+    global current_model, tts_model
+    if not model_path:
+        return "未选择模型！", gr.update()
+    
+    # 强制清理旧模型占用的显存
+    if current_model is not None:
+        print(" [Debug] Cleaning up old model VRAM...")
+        try:
+            current_model.unload_model()
+        except Exception as e:
+            print(f" [Debug] Failed to unload model: {e}")
+        current_model = None
+        torch.cuda.empty_cache()
+        gc.collect()
+        time.sleep(1) # 给显存释放一点缓冲时间
+        
+    if not os.path.exists(config_path):
+        return f"配置文件不存在: {config_path}", gr.update()
+    
+    # Handle diffusion paths
+    diff_model = diff_model_path if diff_model_path and os.path.exists(diff_model_path) else None
+    diff_config = diff_config_path if diff_config_path and os.path.exists(diff_config_path) else None
+    resolved_vocoder = resolve_vocoder_name(vocoder_name)
+    if resolved_vocoder is None:
+        return "未找到可用声码器，请检查 pretrain 目录下是否存在包含 model 与 config.json 的声码器文件夹", []
+    if diff_config:
+        try:
+            with open(diff_config, "r", encoding="utf-8") as f:
+                diff_cfg = yaml.safe_load(f) or {}
+            diff_cfg.setdefault("vocoder", {})
+            diff_cfg["vocoder"]["ckpt"] = f"pretrain/{resolved_vocoder}/model"
+            with open(diff_config, "w", encoding="utf-8") as f:
+                yaml.safe_dump(diff_cfg, f, allow_unicode=True, sort_keys=False)
+        except Exception as e:
+            return f"更新扩散声码器失败: {e}", []
+
+    # Handle cluster model path (Logic: check logs/[project_name]/kmeans_10000.pt or feature_and_index.pkl)
+    cluster_model_path = ""
+    project_name = os.path.basename(os.path.dirname(model_path))
+    possible_cluster_paths = [
+        os.path.join("logs", project_name, "feature_and_index.pkl"),
+        os.path.join("logs", project_name, "kmeans_10000.pt")
+    ]
+    for p in possible_cluster_paths:
+        if os.path.exists(p):
+            cluster_model_path = p
+            break
+
+    # Auto-detect speaker from config
+    spk_list = []
+    
+    # If using only diffusion, prioritize diffusion config for speaker list
+    if only_diffusion and diff_config and os.path.exists(diff_config):
+        try:
+            with open(diff_config, 'r', encoding='utf-8') as f:
+                diff_cfg = yaml.safe_load(f)
+                if "spk" in diff_cfg and diff_cfg["spk"]:
+                    spk_list = list(diff_cfg["spk"].keys())
+        except Exception as e:
+            print(f"Error reading diffusion config for speakers: {e}")
+
+    # Fallback to VITS config if spk_list is still empty
+    if not spk_list:
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                cfg = json.load(f)
+                if "spk" in cfg and cfg["spk"]:
+                    spk_list = list(cfg["spk"].keys())
+        except:
+            pass
+
+    try:
+        current_model = Svc(
+            model_path, 
+            config_path,
+            cluster_model_path=cluster_model_path,
+            diffusion_model_path=diff_model,
+            diffusion_config_path=diff_config,
+            shallow_diffusion=shallow_diffusion,
+            only_diffusion=only_diffusion
+        )
+        
+        # Load TTS model if not already loaded (Deprecated for edge-tts)
+        # if tts_model is None:
+        #     try:
+        #         tts_model = VITS_PinYin("bert_vits/model/G_953000.pth", "bert_vits/config/config.json")
+        #     except Exception as e:
+        #         print(f"TTS Model Load Error: {e}")
+
+        msg = f"模型加载成功: {model_path}\n"
+        if diff_model:
+            msg += f"扩散模型加载成功: {diff_model} (仅扩散: {only_diffusion}, 浅扩散: {shallow_diffusion})\n"
+        
+        if spk_list:
+             msg += f"已检测到说话人: {', '.join(spk_list)}"
+        
+        return msg, spk_list
+             
+    except Exception as e:
+        return f"模型加载失败: {e}", []
+
+def apply_audio_effects(file_path, effect_mode):
+    if effect_mode == "无 (None)" or not effect_mode:
+        return file_path
+    
+    # Create a new filename for the effect to avoid overwriting issues
+    # base, ext = os.path.splitext(file_path)
+    # output_path = f"{base}_effect{ext}"
+    
+    # Define filters
+    filter_str = ""
+    if effect_mode == "混响 (Reverb)":
+        # Simulated Reverb (Studio Room) - Weaker & Cleaner
+        # in_gain=1.0 (clear vocal), out_gain=0.5 (moderate echo), delay=60ms, decay=0.3 (fast fade)
+        filter_str = "aecho=1.0:0.5:60:0.3"
+    elif effect_mode == "空洞 (Hollow)":
+        # Robot/Hollow effect (Pipe resonance) - Subtle
+        # in_gain=1.0, out_gain=0.4 (quiet resonance), delay=25ms (pipe size), decay=0.3
+        filter_str = "aecho=1.0:0.4:25:0.3"
+    elif effect_mode == "空灵 (Ethereal)":
+        # Ethereal effect (Tight Slapback) - Spacial but fast
+        # in_gain=1.0, out_gain=0.4, delay=150ms (fast slap), decay=0.3
+        filter_str = "aecho=1.0:0.4:150:0.3"
+    
+    if not filter_str:
+        return file_path
+        
+    # Use a temp file to prevent partial write issues
+    temp_output_path = f"{file_path}.temp.wav"
+    
+    try:
+        ffmpeg_exe = _get_ffmpeg_executable()
+        if not ffmpeg_exe:
+            raise Exception("ffmpeg not found (set FFMPEG_PATH or add ffmpeg to PATH)")
+        cmd = [ffmpeg_exe, "-i", file_path, "-af", filter_str, "-y", temp_output_path]
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        
+        # Allow filesystem to sync
+        time.sleep(0.5)
+        
+        # Ensure file exists and has size
+        if os.path.exists(temp_output_path) and os.path.getsize(temp_output_path) > 0:
+            # Overwrite original file with effected version
+            shutil.move(temp_output_path, file_path)
+            time.sleep(0.5)
+            return file_path
+            
+    except Exception as e:
+        print(f"Effect application failed: {e}")
+        if os.path.exists(temp_output_path):
+            try:
+                os.remove(temp_output_path)
+            except:
+                pass
+    
+    return file_path
+
+def show_notification(title, message):
+    """跨平台系统通知 + 声音提醒（Mac / Windows）"""
+    def _notify():
+        try:
+            if sys.platform == 'darwin':
+                # ---- macOS ----
+                # 1. 系统通知弹窗（Notification Center）
+                safe_title   = title.replace('"', '\\"').replace("'", "'\"'\"'")
+                safe_message = message.replace('"', '\\"').replace("'", "'\"'\"'")
+                osa_script = (
+                    f'display notification "{safe_message}" '
+                    f'with title "{safe_title}" '
+                    f'sound name "Glass"'
+                )
+                subprocess.Popen(
+                    ["osascript", "-e", osa_script],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                # 2. 额外用 afplay 播放系统提示音（双重保险）
+                # /System/Library/Sounds/ 下有: Glass, Ping, Purr, Sosumi, Tink 等
+                sound_path = "/System/Library/Sounds/Glass.aiff"
+                if os.path.exists(sound_path):
+                    subprocess.Popen(
+                        ["afplay", sound_path],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+
+            elif os.name == 'nt':
+                # ---- Windows ----
+                # 1. 系统提示音
+                if winsound is not None:
+                    winsound.MessageBeep(winsound.MB_ICONASTERISK)
+                # 2. 系统托盘气泡通知（PowerShell）
+                ps_script = f"""
+[void] [System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms")
+$objNotifyIcon = New-Object System.Windows.Forms.NotifyIcon
+$objNotifyIcon.Icon = [System.Drawing.SystemIcons]::Information
+$objNotifyIcon.BalloonTipIcon = "Info"
+$objNotifyIcon.BalloonTipTitle = "{title}"
+$objNotifyIcon.BalloonTipText = "{message}"
+$objNotifyIcon.Visible = $True
+$objNotifyIcon.ShowBalloonTip(5000)
+"""
+                subprocess.Popen(
+                    ["powershell", "-Command", ps_script],
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
+        except Exception as e:
+            print(f"Notification failed: {e}")
+
+    # 后台线程执行，不阻塞推理主流程
+    threading.Thread(target=_notify, daemon=True).start()
+
+def _atomic_write_wav(path, audio, sr):
+    out_dir = os.path.dirname(os.path.abspath(path))
+    os.makedirs(out_dir, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".tmp_", suffix=".wav", dir=out_dir)
+    os.close(fd)
+    try:
+        soundfile.write(tmp_path, audio, sr, format="wav")
+        os.replace(tmp_path, path)
+    finally:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+
+def _atomic_ffmpeg_to_mp3(in_wav_path, out_mp3_path):
+    out_dir = os.path.dirname(os.path.abspath(out_mp3_path))
+    os.makedirs(out_dir, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".tmp_", suffix=".mp3", dir=out_dir)
+    os.close(fd)
+    try:
+        ffmpeg_exe = _get_ffmpeg_executable()
+        if not ffmpeg_exe:
+            raise Exception("ffmpeg not found (set FFMPEG_PATH or add ffmpeg to PATH)")
+        subprocess.run(
+            [ffmpeg_exe, "-i", in_wav_path, "-y", "-acodec", "libmp3lame", "-q:a", "2", tmp_path],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        os.replace(tmp_path, out_mp3_path)
+    finally:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+
+def remix_audio(vocal_vol, bgm_vol, harmony_vol, output_format):
+    global last_vocal_output, last_bgm_path, last_harmony_path, current_model
+    
+    if not last_vocal_output or not os.path.exists(last_vocal_output):
+        return None, None, _build_audio_players_html([], "out_list_audio"), "⚠️ 无法重新混合：找不到上次生成的音频文件 (请先运行一次推理)"
+        
+    temp_paths = []
+    try:
+        # Load Vocal (Ensure safe path for librosa)
+        safe_vocal = convert_to_safe_wav(last_vocal_output)
+        vocal_audio, sr = librosa.load(safe_vocal or last_vocal_output, sr=None)
+        if safe_vocal: temp_paths.append(safe_vocal)
+        
+        # Load BGM (Ensure safe path for librosa)
+        bgm_audio = None
+        if last_bgm_path and os.path.exists(last_bgm_path):
+            safe_bgm = convert_to_safe_wav(last_bgm_path)
+            bgm_audio, _ = librosa.load(safe_bgm or last_bgm_path, sr=sr)
+            if safe_bgm: temp_paths.append(safe_bgm)
+        
+        # Load Harmony (Ensure safe path for librosa)
+        harmony_audio = None
+        if last_harmony_path and os.path.exists(last_harmony_path):
+            safe_harmony = convert_to_safe_wav(last_harmony_path)
+            harmony_audio, _ = librosa.load(safe_harmony or last_harmony_path, sr=sr)
+            if safe_harmony: temp_paths.append(safe_harmony)
+        
+        # Adjust lengths
+        max_len = len(vocal_audio)
+        if bgm_audio is not None: max_len = max(max_len, len(bgm_audio))
+        if harmony_audio is not None: max_len = max(max_len, len(harmony_audio))
+        
+        vocal_final = np.zeros(max_len)
+        bgm_final = np.zeros(max_len)
+        harmony_final = np.zeros(max_len)
+        
+        # Convert dB to linear
+        vocal_gain = 10 ** (vocal_vol / 20)
+        bgm_gain = 10 ** (bgm_vol / 20)
+        harmony_gain = 10 ** (harmony_vol / 20)
+        
+        vocal_final[:len(vocal_audio)] = vocal_audio * vocal_gain
+        if bgm_audio is not None:
+            bgm_final[:len(bgm_audio)] = bgm_audio * bgm_gain
+        if harmony_audio is not None:
+            harmony_final[:len(harmony_audio)] = harmony_audio * harmony_gain
+        
+        # Mix
+        mixed = vocal_final + bgm_final + harmony_final
+        
+        # Normalize
+        max_amp = np.max(np.abs(mixed))
+        if max_amp > 1.0:
+            mixed = mixed / max_amp
+            
+        # Save
+        base, ext = os.path.splitext(last_vocal_output)
+        # Remove old _mixed suffix if present to avoid stacking
+        if "_mixed" in base:
+            base = base.replace("_mixed", "")
+            
+        mix_out_path = f"{base}_remix_v{vocal_vol}_b{bgm_vol}_h{harmony_vol}.wav"
+        _atomic_write_wav(mix_out_path, mixed, sr)
+        
+        final_path = mix_out_path
+        
+        # Convert if MP3
+        if output_format == "mp3":
+            mp3_path = mix_out_path.replace(".wav", ".mp3")
+            _atomic_ffmpeg_to_mp3(mix_out_path, mp3_path)
+            final_path = mp3_path
+            
+        results = [final_path]
+        players_html = _build_audio_players_html(results, "out_list_audio")
+        
+        # Cleanup temp paths
+        for p in temp_paths:
+            try:
+                if p and os.path.exists(p) and os.path.abspath(p).startswith(os.path.abspath(os.path.join("results", "temp_cache"))):
+                    os.remove(p)
+            except: pass
+            
+        return results, final_path, players_html, f"👉 重新混合成功: {final_path}"
+        
+    except Exception as e:
+        # Cleanup temp paths on error
+        for p in temp_paths:
+            try:
+                if p and os.path.exists(p) and os.path.abspath(p).startswith(os.path.abspath(os.path.join("results", "temp_cache"))):
+                    os.remove(p)
+            except: pass
+        import traceback
+        traceback.print_exc()
+        return None, None, _build_audio_players_html([], "out_list_audio"), f"⚠️ 重新混合失败: {e}"
+
+def _get_ffmpeg_executable():
+    for key in ("FFMPEG_PATH", "FFMPEG_BINARY", "FFMPEG_EXE", "FFMPEG"):
+        p = os.environ.get(key)
+        if p and os.path.exists(p):
+            return p
+    p = shutil.which("ffmpeg")
+    if p:
+        return p
+    candidates = [
+        os.path.join(os.getcwd(), "ffmpeg", "bin", "ffmpeg.exe"),
+        os.path.join(os.getcwd(), "ffmpeg.exe"),
+    ]
+    for c in candidates:
+        if c and os.path.exists(c):
+            return c
+    return None
+
+def convert_to_safe_wav(input_path):
+    """
+    Convert input audio to a safe, standard WAV file (PCM 16-bit, 44.1kHz)
+    in a temporary ASCII-only path to avoid libsndfile/permission errors.
+    """
+    if not input_path or not os.path.exists(input_path):
+        return None
+
+    cache_dir = os.path.join("results", "temp_cache")
+    if not os.path.exists(cache_dir):
+        os.makedirs(cache_dir)
+
+    base_name = os.path.splitext(os.path.basename(input_path))[0]
+    safe_filename = f"safe_{int(time.time()*1000)}_{base_name.encode('ascii', 'ignore').decode('ascii') or 'audio'}.wav"
+    safe_audio_path = os.path.abspath(os.path.join(cache_dir, safe_filename))
+
+    try:
+        audio, sr = soundfile.read(input_path, dtype="float32", always_2d=True)
+        if sr != 44100:
+            audio = np.stack(
+                [
+                    librosa.resample(audio[:, ch], orig_sr=sr, target_sr=44100, res_type="kaiser_fast")
+                    for ch in range(audio.shape[1])
+                ],
+                axis=1,
+            )
+            sr = 44100
+        soundfile.write(safe_audio_path, audio, sr, subtype="PCM_16")
+        if not os.path.exists(safe_audio_path) or os.path.getsize(safe_audio_path) == 0:
+            raise Exception("Converted file is missing or empty")
+        time.sleep(0.2)
+        print(f"Debug: Converted {input_path} -> {safe_audio_path}")
+        return safe_audio_path
+    except Exception as sf_e:
+        ffmpeg_exe = _get_ffmpeg_executable()
+        if not ffmpeg_exe:
+            print(f"Error converting file {input_path}: ffmpeg not found (set FFMPEG_PATH or add ffmpeg to PATH). soundfile error: {sf_e}")
+            return None
+        try:
+            cmd = [ffmpeg_exe, "-i", input_path, "-acodec", "pcm_s16le", "-ar", "44100", "-y", safe_audio_path]
+            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if not os.path.exists(safe_audio_path) or os.path.getsize(safe_audio_path) == 0:
+                raise Exception("Converted file is missing or empty")
+            time.sleep(0.2)
+            print(f"Debug: Converted {input_path} -> {safe_audio_path}")
+            return safe_audio_path
+        except Exception as e:
+            print(f"Error converting file {input_path}: {e}")
+            return None
+
+def _format_bytes(num_bytes):
+    try:
+        num_bytes = float(num_bytes)
+    except Exception:
+        return "0B"
+    units = ["B", "KB", "MB", "GB", "TB"]
+    i = 0
+    while num_bytes >= 1024 and i < len(units) - 1:
+        num_bytes /= 1024.0
+        i += 1
+    if i == 0:
+        return f"{int(num_bytes)}{units[i]}"
+    return f"{num_bytes:.2f}{units[i]}"
+
+def _collect_files(dir_path):
+    if not dir_path or not os.path.exists(dir_path):
+        return []
+    files = []
+    for name in os.listdir(dir_path):
+        p = os.path.join(dir_path, name)
+        if os.path.isfile(p):
+            files.append(p)
+    return files
+
+def cleanup_directory(dir_path, keep_latest=200, max_age_days=7):
+    if not dir_path or not os.path.exists(dir_path):
+        return 0, 0
+    files = _collect_files(dir_path)
+    if not files:
+        return 0, 0
+    files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    keep_latest = max(int(keep_latest), 0)
+    keep_set = set(files[:keep_latest])
+    now = time.time()
+    threshold = now - float(max_age_days) * 86400.0
+    deleted_files = 0
+    deleted_bytes = 0
+    for p in files[keep_latest:]:
+        try:
+            deleted_bytes += os.path.getsize(p)
+            os.remove(p)
+            deleted_files += 1
+        except Exception:
+            pass
+    for p in files[:keep_latest]:
+        if p in keep_set:
+            continue
+        try:
+            if os.path.getmtime(p) < threshold:
+                deleted_bytes += os.path.getsize(p)
+                os.remove(p)
+                deleted_files += 1
+        except Exception:
+            pass
+    return deleted_files, deleted_bytes
+
+def cleanup_results_cache():
+    total_files = 0
+    total_bytes = 0
+    # Aggressively clean temp_cache: keep only 10 latest files, max 1 hour old
+    f, b = cleanup_directory(os.path.join("results", "temp_cache"), keep_latest=10, max_age_days=0.04) 
+    total_files += f
+    total_bytes += b
+    # Web output: keep 50 latest, max 1 day old
+    f, b = cleanup_directory(os.path.join("results", "web_output"), keep_latest=50, max_age_days=1)
+    total_files += f
+    total_bytes += b
+    return total_files, total_bytes
+
+def get_results_cache_stats():
+    temp_dir = os.path.join("results", "temp_cache")
+    out_dir = os.path.join("results", "web_output")
+    temp_files = _collect_files(temp_dir)
+    out_files = _collect_files(out_dir)
+    temp_size = sum(os.path.getsize(p) for p in temp_files) if temp_files else 0
+    out_size = sum(os.path.getsize(p) for p in out_files) if out_files else 0
+    return (
+        f"temp_cache: {len(temp_files)} 文件, {_format_bytes(temp_size)}\n"
+        f"web_output: {len(out_files)} 文件, {_format_bytes(out_size)}"
+    )
+
+def clean_cache_ui():
+    deleted_files, deleted_bytes = cleanup_results_cache()
+    stats = get_results_cache_stats()
+    if deleted_files > 0:
+        stats += f"\n上次清理: {deleted_files} 个文件, 释放 {_format_bytes(deleted_bytes)}"
+    else:
+        stats += "\n上次清理: 无需清理"
+    return stats
+
+def slice_audio_logic(input_file, output_dir, min_sec=2, max_sec=12, top_db=40):
+    """
+    将单个长音频文件切分为片段，并去除静音。
+    """
+    try:
+        top_db = float(top_db)
+        if top_db < 0:
+            top_db = -top_db
+        # 加载音频
+        y, sr = librosa.load(input_file, sr=44100)
+        
+        # 1. 预修剪头尾静音
+        y, _ = librosa.effects.trim(y, top_db=top_db)
+        
+        # 2. 使用更短的 frame_length 来探测更细微的声音
+        intervals = librosa.effects.split(y, top_db=top_db, frame_length=1024, hop_length=256)
+        
+        basename = os.path.splitext(os.path.basename(input_file))[0]
+        count = 0
+        
+        for start, end in intervals:
+            chunk = y[start:end]
+            duration = librosa.get_duration(y=chunk, sr=sr)
+            
+            # 如果片段太长，按 max_sec 进行二次切分
+            if duration > max_sec:
+                samples_per_chunk = int(max_sec * sr)
+                for i in range(0, len(chunk), samples_per_chunk):
+                    sub_chunk = chunk[i:i + samples_per_chunk]
+                    sub_duration = librosa.get_duration(y=sub_chunk, sr=sr)
+                    if sub_duration >= min_sec:
+                        output_path = os.path.join(output_dir, f"{basename}_{count}.wav")
+                        soundfile.write(output_path, sub_chunk, sr)
+                        count += 1
+            # 如果片段长度在范围内，保存
+            elif duration >= min_sec:
+                output_path = os.path.join(output_dir, f"{basename}_{count}.wav")
+                soundfile.write(output_path, chunk, sr)
+                count += 1
+        
+        return count
+    except Exception as e:
+        print(f"Error slicing {input_file}: {e}")
+        return 0
+
+def run_audio_slicer_func(folder_name, min_sec, max_sec, top_db):
+    if not folder_name:
+        return "❌ 请选择一个数据集文件夹！"
+    
+    target_dir = os.path.join("dataset_raw", folder_name)
+    if not os.path.exists(target_dir):
+        return f"❌ 文件夹不存在: {target_dir}"
+    
+    backup_dir = target_dir + "_original_backup"
+    if not os.path.exists(backup_dir):
+        os.makedirs(backup_dir)
+    
+    # Move any new audio files from target_dir to backup_dir
+    files_moved = 0
+    for f in os.listdir(target_dir):
+        if f.lower().endswith((".wav", ".mp3", ".m4a")):
+            try:
+                shutil.move(os.path.join(target_dir, f), os.path.join(backup_dir, f))
+                files_moved += 1
+            except Exception as e:
+                print(f"Error moving {f}: {e}")
+    
+    # Process from backup_dir to target_dir
+    wav_files = [f for f in os.listdir(backup_dir) if f.lower().endswith((".wav", ".mp3", ".m4a"))]
+    if not wav_files:
+        return f"❌ 文件夹和备份目录中都没有找到音频文件！"
+    
+    # Clear target_dir of existing slices to avoid duplicates if re-running
+    # But wait, user might want to keep some? No, usually slicing is an all-or-nothing step for a folder.
+    # To be safe, let's just output and let the user know.
+    
+    total_count = 0
+    processed_files = 0
+    for filename in wav_files:
+        file_path = os.path.join(backup_dir, filename)
+        num_slices = slice_audio_logic(file_path, target_dir, min_sec, max_sec, top_db)
+        total_count += num_slices
+        processed_files += 1
+    
+    return f"✅ 处理完成！\n- 处理文件数: {processed_files} (新移入: {files_moved})\n- 生成切片数: {total_count}\n- 保存位置: {target_dir}\n- 原始文件备份在: {backup_dir}"
+
+def run_vad_slicer_func(folder_name, min_sec, max_sec, top_db, fade_ms, silence_gap):
+    if not folder_name:
+        return "❌ 请选择一个数据集文件夹！"
+    
+    target_dir = os.path.join("dataset_raw", folder_name)
+    if not os.path.exists(target_dir):
+        return f"❌ 文件夹不存在: {target_dir}"
+    
+    backup_dir = target_dir + "_original_backup"
+    if not os.path.exists(backup_dir):
+        os.makedirs(backup_dir)
+    
+    # ... (rest of the move logic)
+    files_moved = 0
+    for f in os.listdir(target_dir):
+        if f.lower().endswith((".wav", ".mp3", ".m4a", ".flac")):
+            try:
+                shutil.move(os.path.join(target_dir, f), os.path.join(backup_dir, f))
+                files_moved += 1
+            except Exception as e:
+                print(f"Error moving {f}: {e}")
+    
+    # Process from backup_dir to target_dir
+    wav_files = [f for f in os.listdir(backup_dir) if f.lower().endswith((".wav", ".mp3", ".m4a", ".flac"))]
+    if not wav_files:
+        return f"❌ 文件夹和备份目录中都没有找到音频文件！"
+    
+    total_count = 0
+    processed_files = 0
+    for filename in wav_files:
+        file_path = os.path.join(backup_dir, filename)
+        num_slices = vad_slicer.slice_audio_vad(
+            file_path, target_dir, 
+            min_sec=min_sec, max_sec=max_sec, 
+            top_db=top_db, fade_ms=fade_ms,
+            silence_gap=silence_gap
+        )
+        total_count += num_slices
+        processed_files += 1
+    
+    return f"✅ VAD 处理完成！\n- 处理文件数: {processed_files} (新移入: {files_moved})\n- 生成切片数: {total_count}\n- 保存位置: {target_dir}\n- 提示: 智能合并了小于 {silence_gap}s 的停顿，避免过度切分。"
+
+async def generate_edge_tts(text, speaker, output_path):
+    communicate = edge_tts.Communicate(text, speaker)
+    await communicate.save(output_path)
+
+def _build_audio_players_html(file_paths, elem_prefix: str):
+    if not file_paths:
+        return "<div class='audio_list'></div>"
+    rows = []
+    for i, p in enumerate(file_paths):
+        if not p:
+            continue
+        try:
+            p_abs = os.path.abspath(p)
+        except Exception:
+            p_abs = p
+        p_enc = quote(p_abs, safe="")
+        p_url = "/gradio_api/file=" + p_enc
+        p_url_fallback = "/file=" + p_enc
+        file_name = html_lib.escape(os.path.basename(p_abs))
+        audio_id = f"{elem_prefix}_{i}"
+        file_ext = html_lib.escape(os.path.splitext(p_abs)[1].replace(".", "").upper() or "AUDIO")
+        rows.append(
+            f"""
+<div class="audio_row modern_audio_card">
+  <div class="audio_meta">
+    <span class="audio_badge">{file_ext}</span>
+    <span class="audio_file_name">{file_name}</span>
+  </div>
+  <audio id="{audio_id}" controls preload="metadata" src="{p_url}" onerror="(function(el){{if(el && el.src && !el.__fallback){{el.__fallback=true; el.src='{p_url_fallback}'; el.load();}}}})(this)"></audio>
+  <div class="audio_actions">
+    <button type="button" title="半速播放" onclick="(function(btn){{const root=btn.getRootNode(); const a=root && root.querySelector('#{audio_id}'); if(a){{a.playbackRate=0.5;}}}})(this)">0.5x</button>
+    <button type="button" title="正常速度" onclick="(function(btn){{const root=btn.getRootNode(); const a=root && root.querySelector('#{audio_id}'); if(a){{a.playbackRate=1.0;}}}})(this)">1x</button>
+    <button type="button" title="二倍速播放" onclick="(function(btn){{const root=btn.getRootNode(); const a=root && root.querySelector('#{audio_id}'); if(a){{a.playbackRate=2.0;}}}})(this)">2x</button>
+    <a class="audio_download_link" href="{p_url}" download target="_blank" rel="noopener noreferrer">下载</a>
+  </div>
+</div>
+""".strip()
+        )
+    inner = "\n".join(rows)
+    return f"<div class='audio_list'>{inner}</div>"
+
+def run_tts_inference(text, tts_speaker, mic_audio, spk, tran, slice_db, auto_f0, output_name, output_format, custom_output_dir,
+                       f0_predictor, k_step, second_encoding, loudness_adjust, auto_filename, cluster_infer_ratio, noise_scale,
+                       pad_seconds, lg_num, lgr_num, enhancer_adaptive_key,
+                       reverb_intensity=0, delay_intensity=0, progress=gr.Progress(track_tqdm=True)):
+    global current_model
+    if current_model is None:
+        return None, None, _build_audio_players_html([], "tts_list_audio"), "SVC 模型未加载，请先加载主模型！"
+    if not spk:
+        return None, None, _build_audio_players_html([], "tts_list_audio"), "请先选择说话人 (Target Trained Voice)！"
+    
+    source_audio = None
+    
+    # Priority 1: Microphone/Audio Input
+    if mic_audio is not None:
+        progress(0.1, desc="正在处理录音文件...")
+        source_audio = mic_audio
+    # Priority 2: Text-to-Speech
+    elif text:
+        progress(0.1, desc="正在生成 TTS 语音 (Edge-TTS)...")
+        try:
+            if not os.path.exists("results"):
+                os.makedirs("results")
+            temp_tts_path = os.path.join("results", f"temp_tts_{int(time.time())}.wav")
+            asyncio.run(generate_edge_tts(text, tts_speaker, temp_tts_path))
+            if not os.path.exists(temp_tts_path) or os.path.getsize(temp_tts_path) == 0:
+                 return None, None, _build_audio_players_html([], "tts_list_audio"), "TTS 语音生成失败 (Edge-TTS)"
+            source_audio = temp_tts_path
+        except Exception as e:
+            return None, None, _build_audio_players_html([], "tts_list_audio"), f"TTS 生成失败: {e}"
+    else:
+        return None, None, _build_audio_players_html([], "tts_list_audio"), "请【输入文字】或【录制音频】！"
+
+    try:
+        progress(0.5, desc="正在进行音色转换...")
+        # Now run SVC inference
+        results, last_audio, players_html, log = run_inference(
+            source_audio, None, None, spk, tran, slice_db, auto_f0, output_name, output_format, custom_output_dir, False,
+            f0_predictor, k_step, second_encoding, loudness_adjust, 0, 0, 0, auto_filename, cluster_infer_ratio, noise_scale, 
+            pad_seconds, lg_num, lgr_num, enhancer_adaptive_key, False, reverb_intensity, delay_intensity, progress
+        )
+        
+        # Cleanup temp TTS if it was generated
+        if text and source_audio and "temp_tts_" in source_audio:
+            try: os.remove(source_audio)
+            except: pass
+        
+        return results, last_audio, players_html, f"转换完成！\n{log}"
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return None, None, _build_audio_players_html([], "tts_list_audio"), f"转换失败: {e}"
+
+VOCAL_SEPARATOR_DIR = "/Users/liubin/Documents/github_pro/vocal-separator"
+
+def find_demucs_mlx():
+    candidates = [
+        os.path.join(VOCAL_SEPARATOR_DIR, ".venv", "bin", "demucs-mlx"),
+        os.path.expanduser("~/.local/bin/demucs-mlx"),
+        "/opt/homebrew/bin/demucs-mlx",
+    ]
+    for path in os.environ.get("PATH", "").split(os.pathsep):
+        if path:
+            candidates.append(os.path.join(path, "demucs-mlx"))
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return None
+
+def _merge_demucs_accompaniment(stems_dir, output_path):
+    stems = []
+    sr = None
+    for name in ["drums", "bass", "other"]:
+        stem_path = os.path.join(stems_dir, f"{name}.wav")
+        if os.path.exists(stem_path):
+            y, stem_sr = soundfile.read(stem_path)
+            stems.append(y)
+            sr = stem_sr
+    if not stems:
+        raise RuntimeError("找不到 drums/bass/other 伴奏 stem")
+
+    min_len = min(s.shape[0] for s in stems)
+    stems = [s[:min_len] for s in stems]
+    merged = np.zeros_like(stems[0], dtype=np.float32)
+    for stem in stems:
+        merged = merged + stem.astype(np.float32)
+    max_val = float(np.max(np.abs(merged))) if merged.size else 0.0
+    if max_val > 0.95:
+        merged = merged / max_val * 0.95
+    soundfile.write(output_path, merged, sr)
+
+def separate_song_precise(input_path, output_dir, progress=None):
+    demucs_bin = find_demucs_mlx()
+    if not demucs_bin:
+        raise RuntimeError(
+            "demucs-mlx 未找到。请先在 vocal-separator 项目安装依赖："
+            "cd /Users/liubin/Documents/github_pro/vocal-separator && .venv/bin/pip install demucs-mlx numpy soundfile"
+        )
+    if not input_path or not os.path.exists(input_path):
+        raise RuntimeError("请上传完整歌曲文件")
+
+    os.makedirs(output_dir, exist_ok=True)
+    song_name = os.path.splitext(os.path.basename(input_path))[0]
+    safe_song_name = re.sub(r"[^\w\u4e00-\u9fff.-]+", "_", song_name).strip("_") or "song"
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    tmp_dir = tempfile.mkdtemp(prefix="cover_sep_")
+    try:
+        if progress:
+            progress(0.08, desc="正在进行精细人声分离...")
+        cmd = [demucs_bin, "-n", "htdemucs_ft", "--shifts", "3", "-o", tmp_dir, input_path]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+        if result.returncode != 0:
+            raise RuntimeError(f"精细分离失败: {(result.stderr or result.stdout)[-800:]}")
+
+        stems_dir = None
+        for root, dirs, files in os.walk(tmp_dir):
+            if "vocals.wav" in files:
+                stems_dir = root
+                break
+        if not stems_dir:
+            raise RuntimeError("找不到 demucs-mlx 输出的人声文件")
+
+        vocals_path = os.path.join(output_dir, f"{timestamp}_{safe_song_name}_纯净人声.wav")
+        accompaniment_path = os.path.join(output_dir, f"{timestamp}_{safe_song_name}_伴奏.wav")
+        shutil.copy2(os.path.join(stems_dir, "vocals.wav"), vocals_path)
+        _merge_demucs_accompaniment(stems_dir, accompaniment_path)
+        return vocals_path, accompaniment_path
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+def _safe_name_part(value, fallback="untitled"):
+    value = str(value or "").strip()
+    value = os.path.splitext(os.path.basename(value))[0] if value else ""
+    value = re.sub(r"[^\w\u4e00-\u9fff.-]+", "_", value).strip("_")
+    return value or fallback
+
+def _unique_output_path(directory, filename):
+    base, ext = os.path.splitext(filename)
+    candidate = os.path.join(directory, filename)
+    index = 2
+    while os.path.exists(candidate):
+        candidate = os.path.join(directory, f"{base}_{index}{ext}")
+        index += 1
+    return candidate
+
+def _rename_cover_results(paths, song_path, model_label):
+    renamed = []
+    song_name = _safe_name_part(song_path, "song")
+    model_name = _safe_name_part(model_label, "model")
+    for p in paths or []:
+        if not p or not os.path.exists(p):
+            continue
+        directory = os.path.dirname(p)
+        ext = os.path.splitext(p)[1] or ".wav"
+        base = os.path.basename(p)
+        if base.startswith("混音_"):
+            filename = f"{song_name}_{model_name}_最终翻唱{ext}"
+        elif base.startswith("人声_"):
+            filename = f"{song_name}_{model_name}_翻唱人声{ext}"
+        else:
+            renamed.append(p)
+            continue
+        target = _unique_output_path(directory, filename)
+        try:
+            os.replace(p, target)
+            renamed.append(target)
+        except Exception:
+            renamed.append(p)
+    return renamed
+
+def _cover_progress_html(percent=0, detail="等待上传歌曲"):
+    percent = max(0, min(100, int(percent)))
+    steps = [
+        ("上传", "原曲试听"),
+        ("分离", "精细人声/伴奏"),
+        ("推理", "模型翻唱"),
+        ("合成", "混音导出"),
+    ]
+    active_step = 0
+    if percent >= 100:
+        active_step = 4
+    elif percent >= 70:
+        active_step = 4
+    elif percent >= 45:
+        active_step = 3
+    elif percent >= 15:
+        active_step = 2
+    elif percent > 0:
+        active_step = 1
+    items = []
+    for idx, (title, subtitle) in enumerate(steps, start=1):
+        if idx < active_step:
+            state = "done"
+        elif idx == active_step:
+            state = "active"
+        else:
+            state = "pending"
+        items.append(
+            f"<div class='cover_step {state}'><span>{idx}</span><strong>{title}</strong><em>{subtitle}</em></div>"
+        )
+    return (
+        "<div class='cover_stage_panel'>"
+        f"<div class='cover_stage_detail'>{html_lib.escape(detail)}</div>"
+        "<div class='cover_progress_bar'>"
+        f"<div class='cover_progress_fill' style='width:{percent}%'></div>"
+        f"<span>{percent}%</span>"
+        "</div>"
+        f"<div class='cover_steps'>{''.join(items)}</div>"
+        "</div>"
+    )
+
+def _cover_stage_html(active_step=0, detail="等待上传歌曲"):
+    percent_map = {0: 0, 1: 8, 2: 35, 3: 68, 4: 100}
+    return _cover_progress_html(percent_map.get(active_step, 0), detail)
+
+def run_cover_inference(song_path, spk, tran, slice_db, auto_f0, output_name, output_format, custom_output_dir,
+                        f0_predictor, k_step, second_encoding, loudness_adjust, auto_filename,
+                        cluster_infer_ratio, noise_scale, pad_seconds, lg_num, lgr_num, enhancer_adaptive_key,
+                        vocal_vol, bgm_vol, reverb_intensity=0, delay_intensity=0, model_path=None,
+                        progress=gr.Progress(track_tqdm=True)):
+    if not song_path:
+        yield None, None, _build_audio_players_html([], "cover_list_audio"), _cover_progress_html(0, "请先上传完整歌曲"), "请上传完整歌曲文件！"
+        return
+    output_dir = custom_output_dir if custom_output_dir else "results/web_output"
+    os.makedirs(output_dir, exist_ok=True)
+    temp_paths = []
+    try:
+        song_title = _safe_name_part(song_path, "song")
+        model_label = spk or os.path.basename(os.path.dirname(model_path or "")) or _safe_name_part(model_path, "model")
+        cover_title = _safe_name_part(output_name, "") if output_name else f"{song_title}_{_safe_name_part(model_label, 'model')}"
+        log_lines = [
+            "一键翻唱任务开始",
+            f"原曲: {os.path.basename(song_path)}",
+            f"模型/音色: {model_label}",
+        ]
+        yield None, None, _build_audio_players_html([], "cover_list_audio"), _cover_progress_html(5, "正在读取并标准化上传歌曲"), "\n".join(log_lines)
+
+        progress(0.03, desc="正在标准化上传歌曲...")
+        safe_song_path = convert_to_safe_wav(song_path)
+        if not safe_song_path:
+            yield None, None, _build_audio_players_html([], "cover_list_audio"), _cover_progress_html(5, "歌曲文件预处理失败"), f"歌曲文件预处理失败: {song_path}"
+            return
+        temp_paths.append(safe_song_path)
+        log_lines.append("1/4 上传歌曲已标准化，原曲可试听")
+        yield None, None, _build_audio_players_html([], "cover_list_audio"), _cover_progress_html(18, "正在精细分离纯净人声和伴奏"), "\n".join(log_lines)
+
+        sep_dir = os.path.join("results", "web_output", "cover_separated")
+        vocals_path, accompaniment_path = separate_song_precise(safe_song_path, sep_dir, progress)
+        log_lines.append(f"2/4 精细分离完成: {os.path.basename(vocals_path)}, {os.path.basename(accompaniment_path)}")
+        yield [vocals_path, accompaniment_path], None, _build_audio_players_html([vocals_path, accompaniment_path], "cover_list_audio"), _cover_progress_html(48, "正在用纯净人声进行模型推理"), "\n".join(log_lines)
+
+        progress(0.42, desc="正在用纯净人声进行推理翻唱...")
+        results, last_audio, players_html, log = run_inference(
+            vocals_path, accompaniment_path, None, spk, tran, slice_db,
+            auto_f0, cover_title, output_format, custom_output_dir, False,
+            f0_predictor, k_step, second_encoding, loudness_adjust, vocal_vol, bgm_vol, 0,
+            False, cluster_infer_ratio, noise_scale, pad_seconds, lg_num, lgr_num,
+            enhancer_adaptive_key, False, reverb_intensity, delay_intensity, progress
+        )
+        if results:
+            renamed_results = _rename_cover_results(results, song_path, model_label)
+            all_results = [vocals_path, accompaniment_path] + renamed_results
+            final_audio = renamed_results[-1] if renamed_results else results[-1]
+            log_lines.append("3/4 翻唱推理完成")
+            log_lines.append(f"4/4 伴奏合成完成: {os.path.basename(final_audio)}")
+            log_lines.append("")
+            log_lines.append("输出文件:")
+            log_lines.extend([f"- {p}" for p in all_results])
+            yield all_results, final_audio, _build_audio_players_html(all_results, "cover_list_audio"), _cover_progress_html(100, "一键翻唱完成，可以试听最终结果"), "\n".join(log_lines)
+            return
+        log_lines.append(log or "未生成结果")
+        yield results, None, players_html, _cover_progress_html(68, "推理未生成结果"), "\n".join(log_lines)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        yield None, None, _build_audio_players_html([], "cover_list_audio"), _cover_progress_html(0, "一键翻唱失败"), f"一键翻唱失败: {e}"
+    finally:
+        for p in temp_paths:
+            try:
+                if p and os.path.exists(p) and os.path.abspath(p).startswith(os.path.abspath(os.path.join("results", "temp_cache"))):
+                    os.remove(p)
+            except Exception:
+                pass
+
+def apply_pedalboard_effects(audio, sr, reverb_intensity, delay_intensity):
+    """
+    Apply EQ, Compressor, Delay and Reverb to audio using Pedalboard.
+    """
+    try:
+        if reverb_intensity > 0 or delay_intensity > 0:
+            # Ensure audio is 2D (channels, samples) for pedalboard
+            audio_for_pedal = audio.reshape(1, -1) if audio.ndim == 1 else audio
+            
+            effects = [
+                HighpassFilter(cutoff_frequency_hz=80),
+                PeakFilter(cutoff_frequency_hz=200, gain_db=1.5, q=0.7),
+                PeakFilter(cutoff_frequency_hz=3000, gain_db=2.0, q=1.0),
+                PeakFilter(cutoff_frequency_hz=7000, gain_db=-3.0, q=2.0),
+                LowpassFilter(cutoff_frequency_hz=16000),
+                Compressor(threshold_db=-18.0, ratio=4.0, attack_ms=5.0, release_ms=150.0),
+            ]
+            
+            if delay_intensity > 0:
+                try:
+                    # Use first 30s for BPM detection
+                    y_mono = librosa.to_mono(audio_for_pedal)
+                    tempo, _ = librosa.beat.beat_track(y=y_mono[:sr*30], sr=sr)
+                    if isinstance(tempo, (list, np.ndarray)): tempo = tempo[0]
+                    if tempo < 40 or tempo > 220: tempo = 120
+                    delay_time = (60.0 / tempo) * 0.5
+                except:
+                    delay_time = 0.5
+                    
+                delay_mix = (delay_intensity / 10.0) * 0.35
+                effects.append(Delay(delay_seconds=delay_time, feedback=0.25, mix=delay_mix))
+                
+            if reverb_intensity > 0:
+                # 强度级别:   0 (最小)       4 (默认)       10 (最大)
+                room_size_map =  (0.20,          0.55,          0.95)
+                wet_level_map =  (0.15,          0.35,          0.60)
+                
+                def interpolate(value, mapping):
+                    if value <= 4: return mapping[0] + (mapping[1] - mapping[0]) * (value / 4.0)
+                    else: return mapping[1] + (mapping[2] - mapping[1]) * ((value - 4.0) / 6.0)
+                    
+                room_size = interpolate(reverb_intensity, room_size_map)
+                wet_level = interpolate(reverb_intensity, wet_level_map)
+                dry_level = 1.0 - wet_level
+                
+                # Add Pre-delay (30ms) before Reverb
+                effects.append(Delay(delay_seconds=0.03, feedback=0, mix=1.0))
+                
+                effects.append(Reverb(
+                    room_size=room_size, 
+                    damping=0.6, 
+                    wet_level=wet_level, 
+                    dry_level=dry_level, 
+                    width=1.0
+                ))
+            
+            board = Pedalboard(effects)
+            audio_for_pedal = board(audio_for_pedal, sr)
+            return audio_for_pedal.flatten()
+    except Exception as e:
+        print(f"应用效果器处理失败: {e}")
+    return audio
+
+def run_inference(audio_path, bgm_path, harmony_path, spk, tran, slice_db, auto_f0, output_name, output_format, custom_output_dir, generate_variations,
+                  f0_predictor, k_step, second_encoding, loudness_adjust, vocal_vol, bgm_vol, harmony_vol, auto_filename, cluster_infer_ratio, noise_scale,
+                  pad_seconds, lg_num, lgr_num, enhancer_adaptive_key,
+                  post_uvr_dereverb=False, reverb_intensity=0, delay_intensity=0, progress=gr.Progress(track_tqdm=True)):
+    global current_model, last_vocal_output, last_bgm_path, last_harmony_path, loading_lock
+    if loading_lock.locked():
+        return None, None, _build_audio_players_html([], "out_list_audio"), "⚠️ 模型正在加载或切换中，请稍候再试..."
+    
+    with loading_lock:
+        if current_model is None:
+            return None, None, _build_audio_players_html([], "out_list_audio"), "请先加载模型！"
+    if not spk:
+        return None, None, _build_audio_players_html([], "out_list_audio"), "请先选择说话人 (Speaker)！"
+
+    if not audio_path:
+        return None, None, _build_audio_players_html([], "out_list_audio"), "请上传音频文件！"
+
+    temp_paths = []
+    # Track original paths for Remix functionality
+    original_bgm_path = bgm_path
+    original_harmony_path = harmony_path
+
+    # Fix for Chinese paths/Gradio temp files/Permission errors
+    # Convert audio_path, bgm_path, and harmony_path (if exists)
+    try:
+        # Convert Vocal Input
+        safe_audio_path = convert_to_safe_wav(audio_path)
+        if not safe_audio_path:
+             return None, None, _build_audio_players_html([], "out_list_audio"), f"处理人声输入文件失败 (FFmpeg转换错误)，请检查文件是否损坏: {audio_path}"
+        audio_path = safe_audio_path
+        temp_paths.append(safe_audio_path)
+        
+        # Convert BGM Input (if provided)
+        if bgm_path and os.path.exists(bgm_path):
+            safe_bgm_path = convert_to_safe_wav(bgm_path)
+            if safe_bgm_path:
+                bgm_path = safe_bgm_path
+                temp_paths.append(safe_bgm_path)
+            else:
+                return None, None, _build_audio_players_html([], "out_list_audio"), f"处理伴奏文件失败 (FFmpeg转换错误): {bgm_path}"
+        
+        # Convert Harmony Input (if provided)
+        if harmony_path and os.path.exists(harmony_path):
+            safe_harmony_path = convert_to_safe_wav(harmony_path)
+            if safe_harmony_path:
+                harmony_path = safe_harmony_path
+                temp_paths.append(safe_harmony_path)
+            else:
+                return None, None, _build_audio_players_html([], "out_list_audio"), f"处理和声文件失败 (FFmpeg转换错误): {harmony_path}"
+                
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return None, None, _build_audio_players_html([], "out_list_audio"), f"文件预处理异常: {e}"
+
+    results = []
+    log_msg = ""
+    
+    # Determine Output Directory
+    output_dir = "results/web_output"
+    if custom_output_dir:
+        if not os.path.exists(custom_output_dir):
+            try:
+                os.makedirs(custom_output_dir)
+                output_dir = custom_output_dir
+                log_msg += f"已创建自定义目录: {output_dir}\n"
+            except Exception as e:
+                log_msg += f"⚠️ 创建自定义目录失败: {e}，将使用默认目录。\n"
+        else:
+            output_dir = custom_output_dir
+
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    safe_title = output_name.strip() if isinstance(output_name, str) and output_name.strip() else os.path.splitext(os.path.basename(audio_path))[0]
+    if auto_filename:
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    else:
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    base_name = f"{timestamp}_{safe_title}"
+
+    tasks = []
+    if generate_variations:
+        tasks.append({"suffix": "_原调", "tran": 0, "auto_f0": False})
+        tasks.append({"suffix": "_升12度", "tran": 12, "auto_f0": False})
+        tasks.append({"suffix": "_自动音高", "tran": 0, "auto_f0": True})
+    else:
+        tasks.append({"suffix": "", "tran": tran, "auto_f0": auto_f0})
+
+    total_steps = len(tasks)
+    
+    for i, task in enumerate(tasks):
+        progress(i / total_steps, desc=f"正在处理: {base_name}{task['suffix']} ({i+1}/{total_steps})")
+        try:
+            _audio = current_model.slice_inference(
+                audio_path,
+                spk,
+                task['tran'],
+                slice_db,
+                cluster_infer_ratio=cluster_infer_ratio,
+                auto_predict_f0=task['auto_f0'],
+                noice_scale=noise_scale,
+                pad_seconds=pad_seconds,
+                lg_num=lg_num,
+                lgr_num=lgr_num,
+                f0_predictor=f0_predictor,
+                enhancer_adaptive_key=enhancer_adaptive_key,
+                k_step=k_step,
+                second_encoding=second_encoding,
+                loudness_envelope_adjustment=loudness_adjust
+            )
+            current_model.clear_empty()
+            
+            # Save Vocal (Always save WAV first)
+            wav_filename = f"人声_{base_name}{task['suffix']}.wav"
+            out_path_wav = os.path.join(output_dir, wav_filename)
+            _atomic_write_wav(out_path_wav, _audio, current_model.target_sample)
+            
+            final_path = out_path_wav
+            
+            # ========== UVR5 Post-Inference Denoising (Dereverb) ==========
+            if post_uvr_dereverb:
+                progress(i / total_steps + 0.3/total_steps, desc=f"✨ 正在进行 UVR5 降噪 (去除电音/混响)...")
+                try:
+                    dereverb_model = "5_HP-Karaoke-UVR.pth"
+                    dereverb_model_path = os.path.join("uvr5", "uvr_model", dereverb_model)
+                    
+                    if os.path.exists(dereverb_model_path):
+                        dereverb_save_dir = os.path.join("results", "temp_cache", f"dereverb_{int(time.time())}")
+                        os.makedirs(dereverb_save_dir, exist_ok=True)
+                        
+                        device = get_best_device()
+                        is_half = True if device == 'cuda' else False
+                        
+                        # Initialize VR model
+                        dereverb_pre = AudioPre(agg=10, model_path=dereverb_model_path, device=device, is_half=is_half)
+                        dereverb_pre._path_audio_(out_path_wav, dereverb_save_dir, dereverb_save_dir, "wav", is_hp3=False)
+                        
+                        # Find cleaned vocal
+                        cleaned_vocal_path = None
+                        for f in os.listdir(dereverb_save_dir):
+                            if f.startswith("vocal_") and f.endswith(".wav"):
+                                cleaned_vocal_path = os.path.join(dereverb_save_dir, f)
+                                break
+                        
+                        if cleaned_vocal_path and os.path.exists(cleaned_vocal_path):
+                            # Overwrite original wav with cleaned one
+                            shutil.copy(cleaned_vocal_path, out_path_wav)
+                            log_msg += f"✅ UVR5 降噪处理完成\n"
+                        
+                        # Cleanup
+                        del dereverb_pre
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        if torch.backends.mps.is_available():
+                            torch.mps.empty_cache()
+                        gc.collect()
+                        try: shutil.rmtree(dereverb_save_dir)
+                        except: pass
+                    else:
+                        log_msg += f"⚠️ 降噪模型未找到: {dereverb_model_path}\n"
+                except Exception as e:
+                    log_msg += f"⚠️ 降噪处理失败: {e}\n"
+            # ==============================================================
+
+            # Update globals for remixing (use original paths where possible)
+            # We prefer tracking the WAV file for better quality in subsequent remixes
+            last_vocal_output = out_path_wav
+            last_bgm_path = original_bgm_path
+            last_harmony_path = original_harmony_path
+            
+            # Convert to MP3 if requested
+            if output_format == "mp3":
+                mp3_filename = f"人声_{base_name}{task['suffix']}.mp3"
+                out_path_mp3 = os.path.join(output_dir, mp3_filename)
+                try:
+                    _atomic_ffmpeg_to_mp3(out_path_wav, out_path_mp3)
+                    final_path = out_path_mp3
+                    log_msg += f"MP3转换成功: {out_path_mp3}\n"
+                except Exception as e:
+                    log_msg += f"⚠️ MP3转换失败 (请确保安装了ffmpeg): {e}，保留WAV格式。\n"
+            
+            results.append(final_path)
+            log_msg += f"人声生成成功: {final_path}\n"
+            
+            # Mix with BGM and/or Harmony if provided
+            if (bgm_path and os.path.exists(bgm_path)) or (harmony_path and os.path.exists(harmony_path)):
+                try:
+                    progress((i + 0.5) / total_steps, desc=f"正在混合音频: {base_name}{task['suffix']}")
+                    
+                    # Load processed vocal for mixing
+                    vocal_audio, _ = librosa.load(out_path_wav, sr=current_model.target_sample)
+                    
+                    # Apply effects ONLY when mixing with BGM/Harmony (as requested by user)
+                    if reverb_intensity > 0 or delay_intensity > 0:
+                        vocal_audio = apply_pedalboard_effects(vocal_audio, current_model.target_sample, reverb_intensity, delay_intensity)
+                    
+                    # Load BGM
+                    bgm_audio = None
+                    if bgm_path and os.path.exists(bgm_path):
+                        safe_bgm_mix = convert_to_safe_wav(bgm_path)
+                        bgm_audio, _ = librosa.load(safe_bgm_mix or bgm_path, sr=current_model.target_sample)
+                        if safe_bgm_mix: temp_paths.append(safe_bgm_mix)
+                    
+                    # Load Harmony
+                    harmony_audio = None
+                    if harmony_path and os.path.exists(harmony_path):
+                        safe_harmony_mix = convert_to_safe_wav(harmony_path)
+                        harmony_audio, _ = librosa.load(safe_harmony_mix or harmony_path, sr=current_model.target_sample)
+                        if safe_harmony_mix: temp_paths.append(safe_harmony_mix)
+                    
+                    # Apply pitch shift to BGM and Harmony (同步升调)
+                    if task['tran'] != 0:
+                        if bgm_audio is not None:
+                            bgm_audio = librosa.effects.pitch_shift(
+                                bgm_audio, 
+                                sr=current_model.target_sample, 
+                                n_steps=task['tran']
+                            )
+                        if harmony_audio is not None:
+                            harmony_audio = librosa.effects.pitch_shift(
+                                harmony_audio, 
+                                sr=current_model.target_sample, 
+                                n_steps=task['tran']
+                            )
+                    
+                    # Adjust lengths
+                    max_len = len(vocal_audio)
+                    if bgm_audio is not None: max_len = max(max_len, len(bgm_audio))
+                    if harmony_audio is not None: max_len = max(max_len, len(harmony_audio))
+                    
+                    # Create buffers
+                    vocal_final = np.zeros(max_len)
+                    bgm_final = np.zeros(max_len)
+                    harmony_final = np.zeros(max_len)
+                    
+                    # Convert dB to linear
+                    vocal_gain = 10 ** (vocal_vol / 20)
+                    bgm_gain = 10 ** (bgm_vol / 20)
+                    harmony_gain = 10 ** (harmony_vol / 20)
+                    
+                    vocal_final[:len(vocal_audio)] = vocal_audio * vocal_gain
+                    if bgm_audio is not None:
+                        bgm_final[:len(bgm_audio)] = bgm_audio * bgm_gain
+                    if harmony_audio is not None:
+                        harmony_final[:len(harmony_audio)] = harmony_audio * harmony_gain
+                    
+                    mixed = vocal_final + bgm_final + harmony_final
+                    
+                    # Prevent Clipping
+                    max_amp = np.max(np.abs(mixed))
+                    if max_amp > 1.0:
+                        mixed = mixed / max_amp
+                        log_msg += " (已自动防爆音归一化)"
+                        
+                    mix_wav_filename = f"混音_{base_name}{task['suffix']}.wav"
+                    mix_out_path_wav = os.path.join(output_dir, mix_wav_filename)
+                    _atomic_write_wav(mix_out_path_wav, mixed, current_model.target_sample)
+                    
+                    mix_final_path = mix_out_path_wav
+                    
+                    # Convert Mix to MP3
+                    if output_format == "mp3":
+                        mix_mp3_filename = f"混音_{base_name}{task['suffix']}.mp3"
+                        mix_out_path_mp3 = os.path.join(output_dir, mix_mp3_filename)
+                        try:
+                            _atomic_ffmpeg_to_mp3(mix_out_path_wav, mix_out_path_mp3)
+                            mix_final_path = mix_out_path_mp3
+                            log_msg += f"混合音频MP3转换成功\n"
+                        except Exception as e:
+                            log_msg += f"⚠️ 混合音频MP3转换失败: {e}\n"
+
+                    results.append(mix_final_path)
+                    log_msg += f"👉 混合音频生成成功: {mix_final_path}\n"
+                except Exception as e:
+                    log_msg += f"⚠️ 伴奏/和声混合失败: {e}\n"
+        except Exception as e:
+            log_msg += f"生成失败 {task['suffix']}: {e}\n"
+            import traceback
+            traceback.print_exc()
+            
+    progress(1.0, desc="完成！")
+    
+    # Notify User
+    if results:
+        show_notification("So-VITS-SVC 推理完成", f"已成功生成 {len(results)} 个文件")
+
+    # Return results for Files, and the last result (usually Mixed or Auto) for Audio Player
+    last_audio = results[-1] if results else None
+    for p in temp_paths:
+        try:
+            if p and os.path.exists(p) and os.path.abspath(p).startswith(os.path.abspath(os.path.join("results", "temp_cache"))):
+                os.remove(p)
+        except Exception:
+            pass
+    try:
+        deleted_files, deleted_bytes = cleanup_results_cache()
+        if deleted_files > 0:
+            log_msg += f"\n🧹 已自动清理缓存: {deleted_files} 个文件, 释放 {_format_bytes(deleted_bytes)}"
+    except Exception:
+        pass
+    players_html = _build_audio_players_html(results, "out_list_audio")
+    return results, last_audio, players_html, log_msg
+
+# Training Functions
+def init_project_func(project_name):
+    if not project_name:
+        return "请输入项目名称！"
+    
+    msg = ""
+    # 0. Auto-create dataset directory (Logic requested by user)
+    # Special handling for 44k (legacy) - do not enforce folder creation
+    if project_name != "44k":
+        dataset_dir = os.path.join("dataset_raw", project_name)
+        if not os.path.exists(dataset_dir):
+            os.makedirs(dataset_dir)
+            msg += f"已自动创建数据目录: {dataset_dir} (请放入音频文件)\n"
+        else:
+            msg += f"数据目录已存在: {dataset_dir} (可直接使用)\n"
+
+    # 1. Check/Create Config
+    config_src = "configs/config.json"
+    config_dst = f"configs/{project_name}.json"
+    
+    if not os.path.exists(config_dst):
+        if os.path.exists(config_src):
+            shutil.copy(config_src, config_dst)
+            msg += f"已创建配置文件: {config_dst}\n"
+        else:
+            return "错误: 默认配置文件 configs/config.json 不存在！"
+    else:
+        msg += f"使用现有配置文件: {config_dst}\n"
+
+    try:
+        with open(config_dst, 'r', encoding='utf-8') as f:
+            cfg = json.load(f)
+        if 'data' not in cfg: cfg['data'] = {}
+        if 'model' not in cfg: cfg['model'] = {}
+        
+        # Enforce ONNX encoder - Default only, will be updated by preprocess
+        if 'speech_encoder' not in cfg['model']:
+            cfg['model']['speech_encoder'] = "vec768l12-onnx"
+        
+        train_list, val_list = get_project_training_filelists(project_name)
+        cfg['data']['training_files'] = train_list
+        cfg['data']['validation_files'] = val_list
+        locked_dirs = get_project_locked_dataset_dirs(project_name)
+        if locked_dirs and len(locked_dirs) == 1:
+            cfg['model']['n_speakers'] = 1
+            cfg['spk'] = {locked_dirs[0]: 0}
+        with open(config_dst, 'w', encoding='utf-8') as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+        
+    # 2. Create Log Dir
+    log_dir = f"logs/{project_name}"
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+        msg += f"已创建日志目录: {log_dir}"
+    else:
+        msg += f"日志目录已存在: {log_dir}"
+        
+    return msg
+
+def start_training_func(project_name, batch_size, num_workers, all_in_mem):
+    global training_process, current_training_info
+    if training_process:
+        if training_process.poll() is None:
+             return f"训练正在进行中！(PID: {training_process.pid})", gr.update(value="⏳ 训练中 (Training in Progress)...", interactive=False, variant="secondary")
+        else:
+             training_process = None # Reset if dead
+
+    if not project_name:
+        return "请输入项目名称！", gr.update()
+        
+    config_path = f"configs/{project_name}.json"
+    if not os.path.exists(config_path):
+        # Try to init if missing, or default to config.json if project is 44k
+        if project_name == "44k":
+            config_path = "configs/config.json"
+        else:
+            return f"配置文件 {config_path} 不存在，请先点击'初始化/切换项目'！", gr.update()
+
+    # Update Config with Resource Settings
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        # Ensure sections exist
+        if 'train' not in data: data['train'] = {}
+        if 'data' not in data: data['data'] = {}
+             
+        data['train']['batch_size'] = int(batch_size)
+        data['train']['dataloader_num_workers'] = int(num_workers)
+        data['train']['all_in_mem'] = bool(all_in_mem)
+        data['train']['fp16_run'] = False
+        data['train']['log_interval'] = 10
+        data['train']['epochs'] = 40000
+        
+        # Force a valid port to avoid socket error on Windows
+        import random
+        data['train']['port'] = str(random.randint(10000, 20000))
+
+        # Enforce ONNX encoder for training - REMOVED to respect Preprocess selection
+        # if 'model' not in data: data['model'] = {}
+        # data['model']['speech_encoder'] = "vec768l12-onnx"
+
+        training_files, validation_files = get_project_training_filelists(project_name)
+        data['data']['training_files'] = training_files
+        data['data']['validation_files'] = validation_files
+        
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        return f"更新配置失败 (但不影响尝试启动): {e}", gr.update()
+
+    try:
+        python_exe = sys.executable
+        log_dir = os.path.join("logs", project_name)
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, "train.log")
+        env = os.environ.copy()
+        env["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
+        env.setdefault("MPLCONFIGDIR", os.path.abspath("temp/runtime_cache/matplotlib"))
+        env.setdefault("NUMBA_CACHE_DIR", os.path.abspath("temp/runtime_cache/numba"))
+        if os.name == "nt":
+            cmd = f'start "So-VITS-SVC Training - {project_name}" cmd /k "set PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128 && "{python_exe}" train.py -c {config_path} -m {project_name}"'
+            training_process = subprocess.Popen(cmd, shell=True)
+        else:
+            log_file = open(log_path, "a", encoding="utf-8")
+            log_file.write(f"\n===== {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} 启动训练: {project_name} =====\n")
+            log_file.flush()
+            training_process = subprocess.Popen(
+                [python_exe, "-u", "train.py", "-c", config_path, "-m", project_name],
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                cwd=os.getcwd(),
+                env=env,
+            )
+        
+        # Save info for UI restoration
+        current_training_info = {
+            "project_name": project_name,
+            "batch_size": batch_size,
+            "num_workers": num_workers,
+            "all_in_mem": all_in_mem
+        }
+        
+        return (
+            f"训练已启动 (项目: {project_name}, PID: {training_process.pid})\n"
+            f"配置已更新: Batch Size={batch_size}, Num Workers={num_workers}, All In Mem={all_in_mem}\n"
+            f"{get_latest_checkpoint_info(project_name)}\n"
+            f"日志文件: {log_path}",
+            gr.update(value="⏳ 训练中 (Training in Progress)...", interactive=False, variant="secondary")
+        )
+    except Exception as e:
+        return f"启动失败: {e}", gr.update(value="🚀 开始/继续训练 (Start Training)", interactive=True, variant="primary")
+
+def stop_training_func():
+    global training_process
+    if training_process:
+        if os.name == "nt":
+            subprocess.run("taskkill /F /T /PID " + str(training_process.pid), shell=True)
+        else:
+            training_process.terminate()
+        training_process = None
+        return "训练已停止。", gr.update(value="🚀 开始/继续训练 (Start Training)", interactive=True, variant="primary")
+    else:
+        if os.name == "nt":
+            os.system("taskkill /f /im python.exe")
+            return "未找到后台进程，但已发送强制停止指令。", gr.update(value="🚀 开始/继续训练 (Start Training)", interactive=True, variant="primary")
+        return "未找到后台训练进程。", gr.update(value="🚀 开始/继续训练 (Start Training)", interactive=True, variant="primary")
+
+def launch_tensorboard_func(project_name):
+    log_dir = f"logs/{project_name}"
+    if not os.path.exists(log_dir):
+        log_dir = "logs"
+    
+    cmd = f"tensorboard --logdir={log_dir} --port=6006"
+    try:
+        # Launch in background
+        subprocess.Popen(cmd, shell=True)
+        return "TensorBoard 已在后台启动！\n请点击链接访问: http://localhost:6006"
+    except Exception as e:
+        return f"启动失败: {e}"
+
+def _get_project_diffusion_config_path(project_name):
+    if project_name == "44k":
+        return "configs/diffusion.yaml"
+    return f"configs/{project_name}_diffusion.yaml"
+
+def _encoder_out_channels(encoder_name):
+    if encoder_name in ("vec768l12", "dphubert", "wavlmbase+"):
+        return 768
+    if encoder_name in ("vec256l9", "hubertsoft"):
+        return 256
+    if encoder_name in ("whisper-ppg", "cnhubertlarge"):
+        return 1024
+    if encoder_name == "whisper-ppg-large":
+        return 1280
+    return 768
+
+def ensure_project_diffusion_config(project_name, force=False):
+    diff_cfg_path = _get_project_diffusion_config_path(project_name)
+    if (not force) and os.path.exists(diff_cfg_path):
+        return diff_cfg_path
+
+    if project_name == "44k":
+        json_cfg_path = "configs/config.json"
+    else:
+        json_cfg_path = f"configs/{project_name}.json"
+    if not os.path.exists(json_cfg_path):
+        raise FileNotFoundError(f"缺少项目配置文件: {json_cfg_path}")
+
+    with open(json_cfg_path, "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+
+    spk_dict = cfg.get("spk") or {}
+    if not spk_dict:
+        locked_dirs = get_project_locked_dataset_dirs(project_name)
+        if locked_dirs:
+            spk_dict = {locked_dirs[0]: 0}
+
+    encoder = (cfg.get("model") or {}).get("speech_encoder") or "vec768l12"
+    train_list, val_list = get_project_training_filelists(project_name)
+
+    try:
+        import diffusion.logger.utils as du
+        d_cfg = du.load_config("configs_template/diffusion_template.yaml")
+        d_cfg["data"]["training_files"] = train_list
+        d_cfg["data"]["validation_files"] = val_list
+        d_cfg["data"]["encoder"] = encoder
+        d_cfg["data"]["encoder_out_channels"] = _encoder_out_channels(encoder)
+        d_cfg["model"]["n_spk"] = len(spk_dict)
+        d_cfg["spk"] = spk_dict
+        d_cfg["env"]["expdir"] = f"logs/{project_name}/diffusion"
+        du.save_config(diff_cfg_path, d_cfg)
+    except Exception as e:
+        raise RuntimeError(f"生成扩散配置失败: {e}")
+
+    return diff_cfg_path
+
+def _get_project_json_config_path(project_name):
+    if project_name == "44k":
+        return "configs/config.json"
+    return f"configs/{project_name}.json"
+
+def _read_lines(path):
+    for enc in ("utf-8", "utf-8-sig", "gbk", "cp936"):
+        try:
+            with open(path, "r", encoding=enc) as f:
+                return [line.strip() for line in f.readlines() if line.strip()]
+        except Exception:
+            continue
+    return []
+
+def _has_missing_volume_features(train_list_path, check_limit=200):
+    lines = _read_lines(train_list_path)
+    for wav_path in lines[:check_limit]:
+        p = wav_path + ".vol.npy"
+        if (not os.path.exists(p)) or os.path.getsize(p) == 0:
+            return True
+        p = wav_path + ".aug_vol.npy"
+        if (not os.path.exists(p)) or os.path.getsize(p) == 0:
+            return True
+        p = wav_path + ".mel.npy"
+        if (not os.path.exists(p)) or os.path.getsize(p) == 0:
+            return True
+        p = wav_path + ".aug_mel.npy"
+        if (not os.path.exists(p)) or os.path.getsize(p) == 0:
+            return True
+    return False
+
+def ensure_diffusion_features(project_name, speakers, config_path, diffusion_config_path, num_processes=1):
+    train_list, _ = get_project_training_filelists(project_name)
+    if not _has_missing_volume_features(train_list):
+        return "OK"
+    python_exe = sys.executable
+    speakers_str = " ".join([f'"{s}"' for s in speakers]) if speakers else ""
+    cmd = f"\"{python_exe}\" preprocess_hubert_f0.py --use_diff --device cpu --num_processes {int(num_processes)} --config_path {config_path} --diffusion_config_path {diffusion_config_path}"
+    if speakers_str:
+        cmd += f" --speech_export {speakers_str}"
+    subprocess.run(cmd, shell=True, check=True)
+    return "OK"
+
+def start_diffusion_training_func(project_name, diff_batch_size, diff_num_workers):
+    global diffusion_training_process, current_diffusion_info
+    if diffusion_training_process:
+        if diffusion_training_process.poll() is None:
+            return f"扩散训练正在进行中！(PID: {diffusion_training_process.pid})", gr.update(value="⏳ 扩散训练中...", interactive=False, variant="secondary")
+        diffusion_training_process = None
+
+    if not project_name:
+        return "请输入项目名称！", gr.update()
+
+    try:
+        diff_cfg_path = ensure_project_diffusion_config(project_name)
+    except Exception as e:
+        return str(e), gr.update()
+
+    try:
+        with open(diff_cfg_path, "r", encoding="utf-8") as f:
+            d = yaml.safe_load(f)
+        d.setdefault("train", {})
+        d["train"]["batch_size"] = int(diff_batch_size)
+        d["train"]["num_workers"] = int(diff_num_workers)
+        with open(diff_cfg_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(d, f, allow_unicode=True, sort_keys=False)
+    except Exception as e:
+        return f"更新扩散配置失败 (但不影响尝试启动): {e}", gr.update()
+
+    voc_ckpt = None
+    try:
+        voc_ckpt = (((d or {}).get("vocoder") or {}).get("ckpt"))
+    except Exception:
+        voc_ckpt = None
+    if voc_ckpt and (not os.path.exists(voc_ckpt)):
+        return f"扩散训练需要 NSF-HiFiGAN 声码器权重，但路径不存在: {voc_ckpt}", gr.update()
+
+    try:
+        speakers = list((d or {}).get("spk", {}).keys())
+        cfg_path = _get_project_json_config_path(project_name)
+        ensure_diffusion_features(project_name, speakers, cfg_path, diff_cfg_path, num_processes=1)
+        python_exe = sys.executable
+        cmd = f'start "Diffusion Training - {project_name}" cmd /k "set PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128 && \"{python_exe}\" train_diff.py -c {diff_cfg_path}"'
+        diffusion_training_process = subprocess.Popen(cmd, shell=True)
+        current_diffusion_info = {
+            "project_name": project_name,
+            "batch_size": diff_batch_size,
+            "num_workers": diff_num_workers,
+        }
+        return f"扩散训练已启动 (项目: {project_name})！\n配置: {diff_cfg_path}\nBatch Size={diff_batch_size}, Num Workers={diff_num_workers}\n请查看弹出的黑色控制台窗口。", gr.update(value="⏳ 扩散训练中...", interactive=False, variant="secondary")
+    except Exception as e:
+        return f"启动失败: {e}", gr.update(value="🧪 开始扩散训练 (Start Diffusion)", interactive=True, variant="primary")
+
+def stop_diffusion_training_func():
+    global diffusion_training_process
+    if diffusion_training_process:
+        if os.name == "nt":
+            subprocess.run("taskkill /F /T /PID " + str(diffusion_training_process.pid), shell=True)
+        else:
+            diffusion_training_process.terminate()
+        diffusion_training_process = None
+        return "扩散训练已停止。", gr.update(value="🧪 开始扩散训练 (Start Diffusion)", interactive=True, variant="primary")
+    if os.name == "nt":
+        os.system("taskkill /f /im python.exe")
+        return "未找到后台进程，但已发送强制停止指令。", gr.update(value="🧪 开始扩散训练 (Start Diffusion)", interactive=True, variant="primary")
+    return "未找到后台扩散训练进程。", gr.update(value="🧪 开始扩散训练 (Start Diffusion)", interactive=True, variant="primary")
+
+def check_diffusion_training_status():
+    global diffusion_training_process, current_diffusion_info
+    is_running = False
+    status_msg = "扩散训练未运行"
+    found_project = None
+    try:
+        cmd = 'wmic process where "name=\'python.exe\'" get commandline'
+        if os.name == "nt":
+            output = subprocess.check_output(cmd, shell=True).decode('utf-8', errors='ignore')
+            match = re.search(r"train_diff\.py.*?-c\\s+(\\S+)", output)
+            if match:
+                is_running = True
+                cfg_path = match.group(1).strip().strip('\"')
+                if "configs\\" in cfg_path or "configs/" in cfg_path:
+                    base = os.path.basename(cfg_path).replace("_diffusion.yaml", "").replace(".yaml", "")
+                    found_project = "44k" if base == "diffusion" else base
+                current_diffusion_info["project_name"] = found_project or current_diffusion_info.get("project_name", "44k")
+                status_msg = f"🟢 扩散训练进行中... (项目: {current_diffusion_info['project_name']})"
+    except Exception:
+        pass
+
+    if not is_running and diffusion_training_process:
+        if diffusion_training_process.poll() is None:
+            is_running = True
+            status_msg = f"🟢 扩散训练进行中... (项目: {current_diffusion_info.get('project_name', '未知')})"
+        else:
+            diffusion_training_process = None
+
+    if is_running:
+        project_val = found_project if found_project else current_diffusion_info.get("project_name", "44k")
+        return (
+            status_msg,
+            gr.update(value="⏳ 扩散训练中...", interactive=False, variant="secondary"),
+            gr.update(value=_get_project_diffusion_config_path(project_val)),
+            gr.update(value=current_diffusion_info.get("batch_size", 8)),
+            gr.update(value=current_diffusion_info.get("num_workers", 2)),
+        )
+    return (
+        "就绪",
+        gr.update(value="🧪 开始扩散训练 (Start Diffusion)", interactive=True, variant="primary"),
+        gr.update(value=_get_project_diffusion_config_path(current_diffusion_info.get("project_name", "44k"))),
+        gr.update(),
+        gr.update(),
+    )
+
+def run_preprocess_func(selected_dirs, project_name, encoder_name, f0_predictor_name, use_vol_aug, use_diff, force_reprocess, num_processes):
+    global current_model
+    if not selected_dirs:
+        yield "请至少选择一个需要训练的声音文件夹（角色）！"
+        return
+    
+    if not project_name:
+        yield "请先在上方选择或输入项目名称！"
+        return
+
+    # --- Free VRAM before preprocessing ---
+    if current_model is not None:
+        yield "正在释放推理模型显存以供预处理使用..."
+        try:
+            current_model.unload_model()
+            current_model = None
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            if torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+            gc.collect()
+            yield "推理模型显存已释放。"
+        except Exception as e:
+            yield f"⚠️ 释放显存失败: {e}"
+
+    dirs_str = " ".join(selected_dirs)
+    
+    # --- Force Reprocess Logic ---
+    if force_reprocess:
+        yield "正在强制清理旧的特征文件 (Force Reprocess)..."
+        base_target_dir = "dataset/44k"
+        deleted_count = 0
+        for char_name in selected_dirs:
+            char_target_dir = os.path.join(base_target_dir, char_name)
+            if os.path.exists(char_target_dir):
+                # Patterns to delete: .f0.npy, .soft.pt, .spec.pt, .mel.npy, .vol.npy, .aug_mel.npy, .aug_vol.npy
+                patterns = ["*.f0.npy", "*.soft.pt", "*.spec.pt", "*.mel.npy", "*.vol.npy", "*.aug_mel.npy", "*.aug_vol.npy"]
+                for pattern in patterns:
+                    files_to_del = glob.glob(os.path.join(char_target_dir, pattern))
+                    for f in files_to_del:
+                        try:
+                            os.remove(f)
+                            deleted_count += 1
+                        except:
+                            pass
+        yield f"已清理 {deleted_count} 个旧特征文件，准备重新生成。"
+
+    locked_dirs = get_project_locked_dataset_dirs(project_name)
+    if locked_dirs is not None:
+        if sorted(selected_dirs) != sorted(locked_dirs):
+            yield f"该项目已锁定为单模型训练：{project_name} 仅允许选择 {locked_dirs}。"
+            return
+        train_list, val_list = get_project_training_filelists(project_name)
+    else:
+        train_list = f"filelists/{project_name}_train.txt"
+        val_list = f"filelists/{project_name}_val.txt"
+    
+    try:
+        python_exe = sys.executable
+        yield f"正在清理和重采样数据 (clean_and_resample.py) [目标: {dirs_str}]..."
+        subprocess.run(f'"{python_exe}" clean_and_resample.py --dirs {dirs_str}', shell=True, check=True)
+        
+        yield f"正在生成文件列表 (preprocess_flist_config.py) [项目: {project_name}]..."
+        # Pass project-specific filelists AND project-specific config path
+        project_config_path = f"configs/{project_name}.json"
+        diffusion_config_path = _get_project_diffusion_config_path(project_name)
+        
+        # Use selected encoder
+        encoder_arg = encoder_name if encoder_name else "vec768l12"
+        
+        # Build command for preprocess_flist_config
+        cmd_flist = f'"{python_exe}" preprocess_flist_config.py --speech_export {dirs_str} --train_list {train_list} --val_list {val_list} --config_path {project_config_path} --diffusion_config_path {diffusion_config_path} --speech_encoder {encoder_arg}'
+        if use_vol_aug:
+            cmd_flist += " --vol_aug"
+            
+        subprocess.run(cmd_flist, shell=True, check=True)
+        
+        yield f"正在生成 Hubert 和 F0 特征 (preprocess_hubert_f0.py) [目标: {dirs_str}]..."
+        # Use selected f0 predictor
+        f0_arg = f0_predictor_name if f0_predictor_name else "rmvpe"
+        
+        # Build command for preprocess_hubert_f0
+        cmd_hubert = f'"{python_exe}" preprocess_hubert_f0.py --speech_export {dirs_str} --config_path {project_config_path} --f0_predictor {f0_arg} --num_processes {num_processes}'
+        if use_diff:
+            cmd_hubert += " --use_diff"
+            
+        subprocess.run(cmd_hubert, shell=True, check=True)
+        
+        # --- Final Verification and Extra Sync ---
+        yield f"正在同步项目配置文件: {project_config_path} ..."
+        
+        if os.path.exists(project_config_path):
+            with open(project_config_path, 'r', encoding='utf-8') as f:
+                proj_cfg = json.load(f)
+            
+            # Ensure the config uses the project-specific filelists (preprocess_flist_config.py already does this now, but double check)
+            if "data" in proj_cfg:
+                proj_cfg["data"]["training_files"] = train_list
+                proj_cfg["data"]["validation_files"] = val_list
+            
+            # Important: Update n_speakers to match spk dict length
+            if "spk" in proj_cfg:
+                proj_cfg["model"]["n_speakers"] = len(proj_cfg["spk"])
+            
+            # Optimization: Force vol_embedding to true when using vol_aug
+            if "model" in proj_cfg and use_vol_aug:
+                proj_cfg["model"]["vol_embedding"] = True
+            
+            # Optimization: Default num_workers to 0 on Windows for better stability/speed unless specified
+            if "train" in proj_cfg:
+                if proj_cfg["train"].get("dataloader_num_workers") == 1:
+                    proj_cfg["train"]["dataloader_num_workers"] = 0
+            
+            with open(project_config_path, 'w', encoding='utf-8') as f:
+                json.dump(proj_cfg, f, indent=2, ensure_ascii=False)
+            
+            yield f"✅ 预处理全部完成！\n- 项目 {project_name} 已彻底隔离训练数据。\n- 编码器: {encoder_arg}\n- F0预测器: {f0_arg}\n- 响度嵌入: {use_vol_aug}\n- 浅扩散特征: {use_diff}\n- 说话人列表: {list(proj_cfg.get('spk', {}).keys())}\n- 训练列表: {train_list}\n- 提示: 训练时将仅加载以上说话人的数据。"
+        else:
+            yield "❌ 预处理失败：未生成项目配置文件。"
+            
+    except Exception as e:
+        yield f"预处理失败: {e}"
+
+def check_training_status():
+    global training_process, current_training_info
+    
+    is_running = False
+    status_msg = "训练未运行"
+    found_project = None
+    
+    # 1. System-wide check (more robust for 'start' command)
+    try:
+        # Check for python process running train.py
+        # We look for "train.py" and "-m {project_name}" pattern
+        cmd = 'wmic process where "name=\'python.exe\'" get commandline'
+        if os.name == "nt":
+            output = subprocess.check_output(cmd, shell=True).decode('utf-8', errors='ignore')
+            
+            # Look for pattern: train.py ... -m {project_name}
+            match = re.search(r"train\.py.*? -m\s+(\S+)", output)
+            if match:
+                is_running = True
+                found_project = match.group(1).strip()
+                current_training_info["project_name"] = found_project
+                status_msg = f"🟢 训练进行中... (项目: {found_project})"
+    except Exception:
+        pass
+
+    # 2. Internal fallback
+    if not is_running and training_process:
+        if training_process.poll() is None:
+            is_running = True
+            status_msg = f"🟢 训练进行中... (项目: {current_training_info.get('project_name', '未知')})"
+        else:
+            training_process = None # Cleanup
+            
+    if is_running:
+        # Return: Status Text, Button Update, Project Name, Batch Size, Num Workers, All In Mem
+        p_val = found_project if found_project else current_training_info.get("project_name", "44k")
+        return (
+            status_msg,
+            gr.update(value="⏳ 训练中 (Training in Progress)...", interactive=False, variant="secondary"),
+            gr.update(value=p_val),
+            gr.update(value=current_training_info.get("batch_size", 8)),
+            gr.update(value=current_training_info.get("num_workers", 0)),
+            gr.update(value=current_training_info.get("all_in_mem", False))
+        )
+    else:
+        # Pass through the current values to stop "Loading..." animation
+        return (
+            "就绪",
+            gr.update(value="🚀 开始/继续训练 (Start Training)", interactive=True, variant="primary"),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update()
+        )
+
+local_theme = gr.themes.Default(font=[gr.themes.Font("Microsoft YaHei"), "ui-sans-serif", "system-ui", "sans-serif"])
+vocoder_options = get_vocoder_options()
+default_vocoder = "nsf_hifigan_finetuned" if "nsf_hifigan_finetuned" in vocoder_options else ("nsf_hifigan" if "nsf_hifigan" in vocoder_options else (vocoder_options[0] if len(vocoder_options) > 0 else None))
+# UI Layout
+with gr.Blocks(
+    title="AI Singsong Studio (本地中文版)",
+    css="""
+body {
+  background:
+    radial-gradient(circle at 18% 10%, rgba(133, 66, 255, 0.16), transparent 30%),
+    radial-gradient(circle at 86% 22%, rgba(255, 117, 36, 0.10), transparent 28%),
+    #080b14 !important;
+  color: #eef3ff;
+}
+.gradio-container {
+  max-width: 1480px !important;
+  padding: 22px 28px 36px !important;
+  background: transparent !important;
+  color: #eef3ff !important;
+  box-sizing: border-box;
+}
+.gradio-container .main, .gradio-container .contain {
+  background: transparent !important;
+}
+.gradio-container h1, .gradio-container h2, .gradio-container h3,
+.gradio-container h4, .gradio-container label {
+  color: #eef3ff !important;
+}
+.glass_panel {
+  padding: 16px;
+  border: 1px solid rgba(124, 145, 179, 0.32);
+  border-radius: 8px;
+  background: rgba(28, 39, 56, 0.90);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 16px 40px rgba(0, 0, 0, 0.32);
+  backdrop-filter: blur(12px) saturate(1.1);
+  -webkit-backdrop-filter: blur(12px) saturate(1.1);
+}
+.result_panel {
+  padding: 16px;
+  border: 1px solid rgba(124, 145, 179, 0.26);
+  border-radius: 8px;
+  background: rgba(12, 15, 27, 0.92);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 18px 44px rgba(0, 0, 0, 0.36);
+  backdrop-filter: blur(12px) saturate(1.08);
+  -webkit-backdrop-filter: blur(12px) saturate(1.08);
+}
+.section_title {
+  margin: 0 0 10px;
+  padding: 4px 2px 6px;
+  color: #f5f7ff;
+}
+.app_title {
+  margin: 0 0 16px !important;
+  padding: 14px 18px !important;
+  border: 1px solid rgba(124, 145, 179, 0.24);
+  border-radius: 8px;
+  background: rgba(12, 15, 27, 0.52);
+}
+.app_title h1 {
+  margin: 0 !important;
+}
+.app_title .app_title,
+.app_title .prose,
+.page_intro .page_intro,
+.page_intro .prose,
+.step_title .step_title,
+.step_title .prose {
+  padding: 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+.page_intro {
+  margin: 0 0 14px !important;
+  padding: 14px 16px !important;
+  border: 1px solid rgba(124, 145, 179, 0.20);
+  border-radius: 8px;
+  background: rgba(18, 26, 40, 0.62);
+}
+.page_intro h2,
+.page_intro h3,
+.page_intro p {
+  margin-top: 0 !important;
+}
+.page_intro p:last-child {
+  margin-bottom: 0 !important;
+}
+.step_title {
+  margin: 10px 0 10px !important;
+  padding: 10px 12px !important;
+  border-left: 4px solid #ffbe3d !important;
+  border-radius: 8px;
+  background: rgba(255, 190, 61, 0.10) !important;
+}
+.step_title h4,
+.step_title p {
+  margin: 0 !important;
+}
+.step_notice {
+  margin: 0 0 16px !important;
+  padding: 12px 14px !important;
+  border: 1px solid rgba(255, 190, 61, 0.26) !important;
+  border-left: 4px solid #ffbe3d !important;
+  border-radius: 8px;
+  background: rgba(255, 190, 61, 0.08) !important;
+}
+.step_notice .prose,
+.step_notice p {
+  margin: 0 !important;
+  padding: 0 !important;
+  background: transparent !important;
+}
+.option_card {
+  padding: 12px !important;
+  border: 1px solid rgba(124, 145, 179, 0.28) !important;
+  border-radius: 8px !important;
+  background: rgba(18, 26, 40, 0.58) !important;
+}
+.gradio-container .step_title,
+.gradio-container .step_notice,
+.gradio-container .option_card {
+  background-color: transparent !important;
+}
+.gradio-container .step_title {
+  background: rgba(255, 190, 61, 0.10) !important;
+  border-left-color: #ffbe3d !important;
+}
+.gradio-container .step_notice {
+  background: rgba(255, 190, 61, 0.08) !important;
+  border-color: rgba(255, 190, 61, 0.26) !important;
+  border-left-color: #ffbe3d !important;
+}
+.gradio-container .option_card {
+  background: rgba(18, 26, 40, 0.58) !important;
+}
+.option_card label {
+  align-items: flex-start !important;
+  gap: 10px !important;
+  min-height: 0 !important;
+  padding: 6px 4px !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+.option_card label:has(input[type="checkbox"]:checked) {
+  background: rgba(255, 190, 61, 0.08) !important;
+  border: 1px solid rgba(255, 207, 74, 0.58) !important;
+  box-shadow: inset 3px 0 0 #ffbe3d !important;
+}
+.option_card .wrap,
+.option_card .container {
+  border-radius: 8px !important;
+}
+.section_hint {
+  color: #9ba8bd;
+  font-size: 13px;
+}
+.block, .form, .panel, .tabs, .tab-nav, .accordion {
+  border-color: rgba(124, 145, 179, 0.22) !important;
+}
+.block, .form, .accordion {
+  background: rgba(29, 40, 58, 0.76) !important;
+}
+.tabs > .tab-nav, .tab-nav {
+  background: rgba(9, 12, 22, 0.72) !important;
+  border-radius: 8px !important;
+}
+.tabitem {
+  background: transparent !important;
+}
+button.primary, .big_start_btn button {
+  border: 0 !important;
+  background: linear-gradient(135deg, #7c3dff 0%, #a56cff 100%) !important;
+  color: #fff !important;
+  box-shadow: 0 12px 28px rgba(124, 61, 255, 0.28);
+}
+button.secondary {
+  background: rgba(32, 43, 62, 0.95) !important;
+  border: 1px solid rgba(124, 145, 179, 0.28) !important;
+  color: #eef3ff !important;
+}
+button:hover {
+  filter: brightness(1.07);
+}
+input, textarea, select,
+.gradio-container input,
+.gradio-container textarea {
+  background: rgba(30, 42, 61, 0.88) !important;
+  border: 1px solid rgba(124, 145, 179, 0.28) !important;
+  color: #eef3ff !important;
+  border-radius: 8px !important;
+}
+input::placeholder, textarea::placeholder {
+  color: #6f7d92 !important;
+}
+.wrap, .secondary-wrap, .container, .input-container {
+  background: rgba(30, 42, 61, 0.72) !important;
+  border-color: rgba(124, 145, 179, 0.22) !important;
+  border-radius: 8px !important;
+}
+.model_picker .wrap {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+  gap: 10px !important;
+  background: rgba(28, 39, 56, 0.72) !important;
+  border: 0 !important;
+  padding: 8px 0 !important;
+}
+.model_picker label {
+  min-height: 42px;
+  padding: 10px 12px !important;
+  border: 1px solid rgba(124, 145, 179, 0.26) !important;
+  border-radius: 8px !important;
+  background: rgba(16, 24, 38, 0.76) !important;
+  color: #eef3ff !important;
+}
+.model_picker input[type="radio"] { accent-color: #ffbe3d; }
+.model_picker .container {
+  overflow: visible !important;
+}
+.data_picker .wrap {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+  gap: 10px !important;
+  background: rgba(28, 39, 56, 0.72) !important;
+  border: 0 !important;
+  padding: 8px 0 !important;
+}
+.data_picker label {
+  min-height: 42px;
+  padding: 10px 12px !important;
+  border: 1px solid rgba(124, 145, 179, 0.26) !important;
+  border-radius: 8px !important;
+  background: rgba(16, 24, 38, 0.76) !important;
+  color: #eef3ff !important;
+}
+.data_picker label:has(input[type="checkbox"]:checked) {
+  background: rgba(255, 190, 61, 0.12) !important;
+  border-color: rgba(255, 207, 74, 0.98) !important;
+  box-shadow: 0 0 0 2px rgba(255, 190, 61, 0.22), inset 0 1px 0 rgba(255,255,255,0.10) !important;
+}
+.data_picker .container {
+  overflow: visible !important;
+}
+.format_picker .wrap {
+  display: flex !important;
+  gap: 10px !important;
+  background: rgba(28, 39, 56, 0.72) !important;
+  border: 0 !important;
+  padding: 8px 0 !important;
+}
+.format_picker label {
+  min-width: 90px;
+  min-height: 40px;
+  padding: 10px 14px !important;
+  border: 1px solid rgba(124, 145, 179, 0.26) !important;
+  border-radius: 8px !important;
+  background: rgba(16, 24, 38, 0.76) !important;
+  color: #eef3ff !important;
+}
+.format_picker input[type="radio"] { accent-color: #ffbe3d; }
+.file-preview, .upload-container, .file-drop, .dropzone {
+  background: rgba(29, 40, 58, 0.86) !important;
+  border: 1px dashed rgba(142, 161, 190, 0.36) !important;
+  color: #b7c1d4 !important;
+  border-radius: 8px !important;
+}
+.gradio-container .file-preview,
+.gradio-container .upload-container {
+  background: rgba(31, 43, 62, 0.92) !important;
+  border-color: rgba(142, 161, 190, 0.34) !important;
+}
+.gradio-container audio {
+  width: 100%;
+  min-height: 42px;
+  border-radius: 8px !important;
+  background: #101827 !important;
+  filter: saturate(0.92);
+}
+.prose, .markdown, .gradio-container p, .gradio-container li {
+  color: #c5cedf !important;
+}
+.gradio-container a {
+  color: #b992ff !important;
+}
+.one_line_result_row { align-items: flex-start; }
+.playback_controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+.playback_controls span { color: #aeb9cc; font-size: 13px; }
+.playback_controls button,
+.audio_actions button {
+  min-width: 44px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(124, 145, 179, 0.26);
+  background: rgba(30, 42, 61, 0.9);
+  color: #eef3ff;
+  cursor: pointer;
+}
+.playback_controls button:hover,
+.audio_actions button:hover { background: rgba(124, 61, 255, 0.28); border-color: rgba(165, 108, 255, 0.6); }
+.audio_list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+  max-height: none;
+  overflow: visible;
+  padding: 6px 2px;
+}
+.audio_row {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(120, 143, 180, 0.24);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(29, 40, 58, 0.96), rgba(12, 18, 31, 0.96));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 12px 28px rgba(0,0,0,0.22);
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.audio_row audio {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-height: 48px;
+  box-sizing: border-box;
+}
+.audio_meta { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.audio_badge {
+  flex: 0 0 auto;
+  min-width: 44px;
+  padding: 5px 8px;
+  border: 1px solid rgba(255, 207, 74, 0.48);
+  border-radius: 6px;
+  background: rgba(255, 190, 61, 0.14);
+  color: #ffe29b;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: center;
+}
+.audio_file_name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #eef3ff; font-weight: 600; }
+.waveform_strip {
+  display: none;
+  grid-template-columns: repeat(18, 1fr);
+  gap: 3px;
+  height: 42px;
+  align-items: center;
+  padding: 6px 8px;
+  border: 1px solid rgba(124, 145, 179, 0.18);
+  border-radius: 8px;
+  background: rgba(9, 13, 23, 0.58);
+  overflow: hidden;
+}
+.waveform_strip span {
+  display: block;
+  width: 100%;
+  min-height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #ffcf4a, #18ad7f);
+  opacity: 0.86;
+}
+.waveform_strip span:nth-child(3n+1) { height: 16px; }
+.waveform_strip span:nth-child(3n+2) { height: 28px; }
+.waveform_strip span:nth-child(3n) { height: 36px; }
+.waveform_strip span:nth-child(5n) { height: 22px; }
+.audio_actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.audio_download_link {
+  flex: 0 0 auto;
+  padding: 7px 12px;
+  border-radius: 6px;
+  background: #18ad7f;
+  color: #fff !important;
+  text-decoration: none !important;
+  font-size: 13px;
+}
+.audio_download_link:hover { background: #14c893; }
+.big_start_btn button { width: 100%; min-height: 58px; font-size: 20px; padding: 14px 16px; border-radius: 8px !important; }
+#output_audio_player audio, #tts_audio_player audio { width: 100%; }
+.cover_upload {
+  min-height: 190px;
+}
+.cover_upload .upload-container,
+.cover_upload .file-drop,
+#cover_song_upload .upload-container,
+#cover_song_upload .file-drop {
+  min-height: 178px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border: 1px dashed rgba(255, 207, 74, 0.54) !important;
+  background:
+    linear-gradient(135deg, rgba(255, 190, 61, 0.12), rgba(24, 173, 127, 0.10)),
+    rgba(14, 22, 36, 0.94) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 18px 36px rgba(0,0,0,0.24);
+}
+.cover_stage_panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid rgba(124, 145, 179, 0.22);
+  border-radius: 8px;
+  background: rgba(13, 20, 34, 0.88);
+}
+.cover_stage_detail {
+  color: #f5f7ff;
+  font-weight: 700;
+}
+.cover_progress_bar {
+  position: relative;
+  height: 16px;
+  border-radius: 999px;
+  background: rgba(7, 11, 20, 0.82);
+  border: 1px solid rgba(124, 145, 179, 0.20);
+  overflow: hidden;
+}
+.cover_progress_fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #7c3dff, #a76dff, #18ad7f);
+  box-shadow: 0 0 18px rgba(124, 61, 255, 0.42);
+  transition: width 240ms ease;
+}
+.cover_progress_bar span {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #eef3ff;
+  font-size: 12px;
+  font-weight: 800;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.55);
+}
+.cover_steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 8px;
+}
+.cover_step {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  grid-template-areas: "num title" "num sub";
+  gap: 2px 8px;
+  align-items: center;
+  min-height: 54px;
+  padding: 9px;
+  border: 1px solid rgba(124, 145, 179, 0.20);
+  border-radius: 8px;
+  background: rgba(25, 35, 52, 0.82);
+}
+.cover_step span {
+  grid-area: num;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: rgba(124, 145, 179, 0.22);
+  color: #c5cedf;
+  font-weight: 800;
+}
+.cover_step strong { grid-area: title; color: #eef3ff; }
+.cover_step em { grid-area: sub; color: #99a8bd; font-style: normal; font-size: 12px; }
+.cover_step.active {
+  border-color: rgba(255, 207, 74, 0.76);
+  background: rgba(255, 190, 61, 0.12);
+}
+.cover_step.active span {
+  background: #ffbe3d;
+  color: #111827;
+}
+.cover_step.done {
+  border-color: rgba(24, 173, 127, 0.62);
+}
+.cover_step.done span {
+  background: #18ad7f;
+  color: #ffffff;
+}
+.main_nav_html {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 8px 0 14px;
+}
+.main_nav_html button {
+  border: 1px solid rgba(124, 145, 179, 0.28);
+  border-radius: 8px;
+  background: rgba(30, 42, 61, 0.92);
+  color: #eef3ff;
+  cursor: pointer;
+  font-weight: 700;
+  min-height: 42px;
+  padding: 9px 14px;
+}
+.main_nav_html button.active {
+  background: linear-gradient(135deg, #7c3dff, #18ad7f);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+.sub_nav_html {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 8px 0 12px;
+}
+.sub_nav_html button {
+  border: 1px solid rgba(124, 145, 179, 0.28);
+  border-radius: 8px;
+  background: rgba(30, 42, 61, 0.88);
+  color: #dce6f7;
+  cursor: pointer;
+  font-weight: 700;
+  min-height: 38px;
+  padding: 8px 12px;
+}
+.sub_nav_html button.active {
+  background: rgba(255, 190, 61, 0.18);
+  border-color: rgba(255, 205, 74, 0.95);
+  color: #ffffff;
+  box-shadow: 0 0 0 2px rgba(255, 190, 61, 0.28), 0 10px 26px rgba(0, 0, 0, 0.24);
+}
+.gradio-container input[type="radio"],
+.gradio-container input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-grid;
+  place-content: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 8px;
+  border: 2px solid rgba(171, 187, 211, 0.72);
+  background: rgba(6, 10, 18, 0.9);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.42);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.gradio-container input[type="radio"] {
+  border-radius: 999px !important;
+}
+.gradio-container input[type="checkbox"] {
+  border-radius: 6px !important;
+}
+.gradio-container input[type="radio"]::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  transform: scale(0);
+  transition: transform 120ms ease;
+  background: #111827;
+}
+.gradio-container input[type="checkbox"]::before {
+  content: "";
+  width: 9px;
+  height: 5px;
+  border-left: 3px solid #111827;
+  border-bottom: 3px solid #111827;
+  transform: rotate(-45deg) scale(0);
+  transition: transform 120ms ease;
+}
+.gradio-container input[type="radio"]:checked,
+.gradio-container input[type="checkbox"]:checked {
+  border-color: #ffcf4a !important;
+  background: #ffbe3d !important;
+  box-shadow: 0 0 0 3px rgba(255, 190, 61, 0.28), 0 0 18px rgba(255, 190, 61, 0.26) !important;
+}
+.gradio-container input[type="radio"]:checked::before {
+  transform: scale(1);
+}
+.gradio-container input[type="checkbox"]:checked::before {
+  transform: rotate(-45deg) scale(1);
+}
+.gradio-container label:has(input[type="radio"]:checked),
+.gradio-container label:has(input[type="checkbox"]:checked) {
+  background: rgba(255, 190, 61, 0.12) !important;
+  background-color: rgba(255, 190, 61, 0.12) !important;
+  border-color: rgba(255, 207, 74, 0.98) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 0 0 2px rgba(255, 190, 61, 0.22), inset 0 1px 0 rgba(255,255,255,0.10) !important;
+  color: #ffffff !important;
+}
+.gradio-container label:has(input[type="radio"]:checked) *,
+.gradio-container label:has(input[type="checkbox"]:checked) * {
+  color: #ffffff !important;
+}
+.gradio-container input[type="radio"]:checked,
+.gradio-container input[type="checkbox"]:checked {
+  accent-color: #ffbe3d;
+}
+.gradio-container select:focus,
+.gradio-container textarea:focus,
+.gradio-container input:focus {
+  border-color: rgba(255, 207, 74, 0.95) !important;
+  box-shadow: 0 0 0 2px rgba(255, 190, 61, 0.22) !important;
+}
+#slicer_panel,
+#training_panel,
+#a2a_panel,
+#tts_mic_panel,
+.main_panel_hidden {
+  position: absolute !important;
+  left: -100000px !important;
+  top: auto !important;
+  width: 100% !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+@media (max-width: 900px) {
+  .audio_list { grid-template-columns: 1fr; }
+  .cover_steps { grid-template-columns: 1fr; }
+  .glass_panel, .result_panel { padding: 12px; }
+  .main_nav_html button { flex: 1 1 100%; }
+  .gradio-container { padding: 14px 12px 24px !important; }
+  .app_title, .page_intro { padding: 12px !important; }
+}
+"""
+) as app:
+    gr.Markdown("# AI Singsong Studio (本地中文版)", elem_classes=["app_title"])
+    
+    with gr.Column():
+        gr.HTML(
+            """
+<div class="main_nav_html">
+  <button type="button" class="active">🎙️ 推理工作台 (Inference Studio)</button>
+</div>
+"""
+        )
+
+        # --- Tab 1: Inference ---
+        with gr.Column(elem_id="vc_panel"):
+            gr.Markdown("## 💡 选择您的转换模式", elem_classes=["page_intro"])
+            gr.HTML(
+                """
+<div class="sub_nav_html">
+  <button type="button" class="active" data-target="t2a_panel" onclick="(function(btn){var targetId=btn.dataset.target;document.querySelectorAll('.sub_nav_html button[data-target=&quot;a2a_panel&quot;],.sub_nav_html button[data-target=&quot;t2a_panel&quot;]').forEach(function(b){b.classList.toggle('active',b.dataset.target===targetId);});['a2a_panel','t2a_panel'].forEach(function(id){var p=document.getElementById(id);if(!p)return;if(id===targetId){p.style.setProperty('display','flex','important');p.style.setProperty('position','static','important');p.style.removeProperty('left');p.style.removeProperty('top');p.style.removeProperty('width');p.style.setProperty('opacity','1','important');p.style.setProperty('pointer-events','auto','important');}else{p.style.setProperty('display','flex','important');p.style.setProperty('position','absolute','important');p.style.setProperty('left','-100000px','important');p.style.setProperty('top','auto','important');p.style.setProperty('width','100%','important');p.style.setProperty('opacity','0','important');p.style.setProperty('pointer-events','none','important');}});})(this)">🎙️ 一键翻唱 (Cover)</button>
+  <button type="button" data-target="a2a_panel" onclick="(function(btn){var targetId=btn.dataset.target;document.querySelectorAll('.sub_nav_html button[data-target=&quot;a2a_panel&quot;],.sub_nav_html button[data-target=&quot;t2a_panel&quot;]').forEach(function(b){b.classList.toggle('active',b.dataset.target===targetId);});['a2a_panel','t2a_panel'].forEach(function(id){var p=document.getElementById(id);if(!p)return;if(id===targetId){p.style.setProperty('display','flex','important');p.style.setProperty('position','static','important');p.style.removeProperty('left');p.style.removeProperty('top');p.style.removeProperty('width');p.style.setProperty('opacity','1','important');p.style.setProperty('pointer-events','auto','important');}else{p.style.setProperty('display','flex','important');p.style.setProperty('position','absolute','important');p.style.setProperty('left','-100000px','important');p.style.setProperty('top','auto','important');p.style.setProperty('width','100%','important');p.style.setProperty('opacity','0','important');p.style.setProperty('pointer-events','none','important');}});})(this)">🎛️ 手动翻唱 (Manual Cover)</button>
+</div>
+"""
+            )
+            with gr.Column(elem_id="a2a_panel"):
+                    with gr.Row(equal_height=False):
+                        with gr.Column(scale=5, min_width=500, elem_classes=["glass_panel"]):
+                            gr.Markdown("### 1️⃣ 模型选择", elem_classes=["section_title"])
+                            project_dropdown = gr.Radio(label="选择项目/模型文件夹", choices=get_projects(), value="44k", elem_classes=["model_picker"])
+                            model_dropdown = gr.Radio(label="选择模型权重文件 (.pth)", choices=[], value=None, elem_classes=["model_picker"])
+                            with gr.Accordion("扩散模型设置 (Diffusion) - 可选", open=True):
+                                gr.Markdown("""
+                                ### 💡 扩散模型功能说明
+                                - **扩散模型 (.pt)**：加载训练好的扩散模型权重，用于提升音质细节。
+                                - **仅使用扩散模型推理**：完全跳过基础模型，仅靠扩散模型生成。音质最自然，但推理速度较慢。
+                                - **浅扩散 (混合模式)**：结合基础模型（快）和扩散模型（精）。先由基础模型生成底稿，再由扩散模型润色，兼顾速度与质量。
+                                """)
+                                diff_model_dropdown = gr.Dropdown(label="扩散模型 (.pt)", choices=[], value=None)
+                                diff_config_path = gr.Textbox(label="扩散模型配置路径", value="configs/diffusion.yaml")
+                                vocoder_choice = gr.Dropdown(label="选择声码器", choices=vocoder_options, value=default_vocoder)
+                                only_diffusion = gr.Checkbox(label="仅使用扩散模型推理", value=False)
+                                shallow_diffusion = gr.Checkbox(label="浅扩散 (混合模式)", value=False)
+                            with gr.Row():
+                                refresh_btn = gr.Button("🔄 刷新模型列表")
+                                load_btn = gr.Button("📂 加载选定模型", variant="primary")
+                            status_text = gr.Textbox(label="系统状态", value="就绪")
+
+                        with gr.Column(scale=6, min_width=520, elem_classes=["result_panel"]):
+                            infer_btn = gr.Button("🚀 开始转换 (Start)", variant="primary", elem_classes=["big_start_btn"])
+
+                            gr.Markdown("### 2️⃣ 音频输入", elem_classes=["section_title"])
+                            audio_input = gr.File(label="1. 上传干声/原曲 (必选)", file_types=["audio"], type="filepath")
+                            bgm_input = gr.Audio(label="2. 上传背景音乐/伴奏 (可选 - 用于合成)", type="filepath")
+                            harmony_input = gr.Audio(label="3. 上传和声 (可选 - 用于合成)", type="filepath")
+                            with gr.Row():
+                                output_name_input = gr.Textbox(label="作品名", placeholder="歌名_歌手")
+                                output_format = gr.Radio(["wav", "mp3"], label="导出格式", value="mp3", interactive=True, elem_classes=["format_picker"])
+                            output_dir_input = gr.Textbox(label="自定义保存目录", value="", visible=False)
+                            clear_inputs_btn = gr.Button("🗑️ 一键清空音频输入", variant="secondary")
+
+                            auto_filename_chk = gr.Checkbox(label="自动命名 (使用时间戳)", value=True, visible=False)
+                            with gr.Accordion("参数选择", open=False):
+                                with gr.Accordion("混合设置 (Mixing)", open=False):
+                                    with gr.Row():
+                                        vocal_vol_slider = gr.Slider(label="人声音量 (dB)", minimum=-20, maximum=20, value=4, step=0.1)
+                                        bgm_vol_slider = gr.Slider(label="伴奏音量 (dB)", minimum=-20, maximum=20, value=-2, step=0.1)
+                                        harmony_vol_slider = gr.Slider(label="和声音量 (dB)", minimum=-20, maximum=20, value=-3, step=0.1)
+                                    remix_btn = gr.Button("仅重新混合 (Re-Mix Only)", variant="secondary")
+
+                                with gr.Accordion("高级设置 (Advanced)", open=False):
+                                    with gr.Row():
+                                        spk_input = gr.Dropdown(label="说话人 (Speaker)", choices=[], value=None, interactive=True)
+                                        tran_slider = gr.Slider(label="变调 (半音)", minimum=-24, maximum=24, value=0, step=1, info="男转女推荐+12，女转男推荐-12")
+                                    with gr.Row():
+                                        slice_db_slider = gr.Slider(label="切片阈值 (dB)", minimum=-100, maximum=0, value=-40, info="越小切得越碎，防爆音并减少显存")
+                                        post_uvr_dereverb_chk = gr.Checkbox(label="✨ 推理后 UVR5 降噪 (去除电音/混响)", value=False, info="转换完成后自动调用 UVR5 清理人声，极大提升纯净度")
+                                    with gr.Row():
+                                        reverb_intensity = gr.Slider(label="混响强度 (Reverb Intensity)", minimum=0, maximum=10, value=0, step=0.1, info="0为关闭。调高能增加空间感")
+                                        delay_intensity = gr.Slider(label="回声强度 (Echo Intensity)", minimum=0, maximum=10, value=0, step=0.1, info="0为关闭。调高能增加回声效果")
+                                    with gr.Row():
+                                        auto_f0_check = gr.Checkbox(label="自动音高预测 (Auto F0)", value=False, info="适合语音转换")
+                                        f0_predictor_drop = gr.Dropdown(label="F0预测器", choices=["crepe", "pm", "dio", "harvest", "rmvpe", "fcpe"], value="rmvpe", info="推荐使用 fcpe 或 rmvpe")
+                                    cluster_ratio_slider = gr.Slider(label="聚类模型混合比例", minimum=0, maximum=1, value=0, step=0.1, info="0为关闭。调高能让音色更像，但会导致咬字模糊。建议 0.1-0.3")
+                                    noise_scale_slider = gr.Slider(label="noise_scale 建议不要动，会影响音质，玄学参数", minimum=0, maximum=1, value=0.4, step=0.1)
+                                    pad_seconds_slider = gr.Number(label="推理音频pad秒数，由于未知原因开头结尾会有异响，pad一小段静音段后就不会出现", value=0.5)
+                                    lg_num_slider = gr.Number(label="两端音频切片的交叉淡入长度，如果自动切片后出现人声不连贯可调整该数值，如果连贯建议采用默认值0，注意，该设置会影响推理速度，单位为秒/s", value=1)
+                                    lgr_num_slider = gr.Number(label="自动音频切片后，需要舍弃每段切片的头尾。该参数设置交叉长度保留的比例，范围0-1,左开右闭", value=0.75)
+                                    enhancer_adaptive_key_slider = gr.Number(label="使NSF-HIFIGAN增强器适应更高的音域(单位为半音数)|默认为0", value=0)
+                                    gr.Markdown("#### 扩散参数")
+                                    with gr.Row():
+                                        k_step_slider = gr.Slider(label="扩散步数 (k_step)", minimum=1, maximum=1000, value=100, step=1, info="步数越高音质越好，但推理速度越慢")
+                                        second_encoding_check = gr.Checkbox(label="二次编码", value=False, info="推理前对音频进行二次处理，有时能提升效果")
+                                    loudness_adjust = gr.Slider(label="输入源响度包络替换输出响度包络融合比例，越靠近1越使用输出响度包络", minimum=0, maximum=1, value=0, step=0.1)
+
+                                variations_check = gr.Checkbox(label="✨ 一键生成三个版本 (原调、升12度、自动音高)", value=False)
+
+                    with gr.Column(elem_classes=["result_panel"]):
+                            gr.Markdown("### 4️⃣ 输出结果", elem_classes=["section_title"])
+                            output_audio_player = gr.Audio(label="最新结果试听", interactive=False, elem_id="output_audio_player")
+                            gr.HTML(
+                                """
+<div class="playback_controls">
+  <span>倍速播放：</span>
+  <button type="button" onclick="(function(btn){const root=btn.getRootNode(); const a=root && root.querySelector('#output_audio_player audio'); if(a){a.playbackRate=0.5;}})(this)">0.5x</button>
+  <button type="button" onclick="(function(btn){const root=btn.getRootNode(); const a=root && root.querySelector('#output_audio_player audio'); if(a){a.playbackRate=1.0;}})(this)">1x</button>
+  <button type="button" onclick="(function(btn){const root=btn.getRootNode(); const a=root && root.querySelector('#output_audio_player audio'); if(a){a.playbackRate=2.0;}})(this)">2x</button>
+</div>
+"""
+                            )
+                            output_files = gr.Files(label="生成的音频文件")
+                            gr.Markdown("#### 批量试听与下载")
+                            output_players_html = gr.HTML(value=_build_audio_players_html([], "out_list_audio"))
+                            log_output = gr.Textbox(label="运行日志")
+                            with gr.Row():
+                                cache_stats = gr.Textbox(label="缓存占用 (磁盘)", value=get_results_cache_stats(), lines=3, interactive=False)
+                                cache_clean_btn = gr.Button("🧹 清理缓存 (temp_cache / web_output)", variant="secondary")
+
+            with gr.Column(elem_id="t2a_panel"):
+                    with gr.Row():
+                        with gr.Column(elem_classes=["glass_panel"]):
+                            gr.Markdown("### 1️⃣ 翻唱模型", elem_classes=["section_title"])
+                            cover_project_dropdown = gr.Radio(label="选择项目/模型文件夹", choices=get_projects(), value="44k", elem_classes=["model_picker"])
+                            cover_model_dropdown = gr.Radio(label="选择模型权重文件 (.pth)", choices=[], value=None, elem_classes=["model_picker"])
+                            with gr.Accordion("扩散模型设置", open=False):
+                                cover_diff_model_dropdown = gr.Dropdown(label="扩散模型 (.pt)", choices=[], value=None)
+                                cover_diff_config_path = gr.Textbox(label="扩散模型配置路径", value="configs/diffusion.yaml")
+                                cover_vocoder_choice = gr.Dropdown(label="选择声码器", choices=vocoder_options, value=default_vocoder)
+                                cover_only_diffusion = gr.Checkbox(label="仅使用扩散模型推理", value=False)
+                                cover_shallow_diffusion = gr.Checkbox(label="浅扩散 (混合模式)", value=False)
+                            with gr.Row():
+                                cover_refresh_btn = gr.Button("刷新模型列表")
+                                cover_load_btn = gr.Button("加载翻唱模型", variant="primary")
+                            cover_status_text = gr.Textbox(label="模型状态", value="就绪")
+
+                            gr.Markdown("### 2️⃣ 上传完整歌曲", elem_classes=["section_title"])
+                            cover_song_input = gr.File(
+                                label="拖入或选择完整歌曲",
+                                file_types=["audio"],
+                                type="filepath",
+                                elem_id="cover_song_upload",
+                                elem_classes=["cover_upload"]
+                            )
+                            cover_source_player = gr.Audio(label="原曲试听", interactive=False, elem_id="cover_source_player")
+                            
+                            tts_target_spk = gr.Dropdown(
+                                label="3. 选择翻唱音色",
+                                choices=[], 
+                                value=None,
+                                interactive=True,
+                                info="加载模型后在这里选择目标音色"
+                            )
+                            
+                            with gr.Row():
+                                tts_tran_slider = gr.Slider(label="音高调整 (半音)", minimum=-24, maximum=24, value=0, step=1, info="男变女建议+12，女变男建议-12")
+                                tts_auto_f0 = gr.Checkbox(label="自动音高预测", value=False, info="歌曲翻唱通常关闭；源歌旋律复杂时可试着打开")
+                            
+                            with gr.Row():
+                                cover_vocal_vol = gr.Slider(label="翻唱人声音量 (dB)", minimum=-20, maximum=20, value=4, step=0.1)
+                                cover_bgm_vol = gr.Slider(label="原伴奏音量 (dB)", minimum=-20, maximum=20, value=-2, step=0.1)
+                            tts_output_name = gr.Textbox(label="4. 输出作品名 (可选)", placeholder="留空则使用 原歌名_模型名")
+                        
+                        with gr.Column(elem_classes=["result_panel"]):
+                            gr.Markdown("### 2️⃣ 翻唱结果", elem_classes=["section_title"])
+                            tts_infer_btn = gr.Button("🎙️ 精细分离并一键翻唱", variant="primary", elem_classes=["big_start_btn"])
+                            cover_stage_html = gr.HTML(value=_cover_stage_html())
+                            tts_log_output = gr.Textbox(label="运行日志", lines=8)
+                            with gr.Row(elem_classes=["one_line_result_row"]):
+                                with gr.Column(scale=1, min_width=260):
+                                    tts_output_files = gr.Files(label="生成文件")
+                                with gr.Column(scale=3, min_width=520):
+                                    gr.Markdown("#### 最新结果试听")
+                                    tts_audio_player = gr.Audio(label="试听", interactive=False, elem_id="tts_audio_player")
+                                    gr.Markdown("#### 分离与翻唱文件")
+                                    tts_players_html = gr.HTML(value=_build_audio_players_html([], "cover_list_audio"))
+
+            # Events
+            tts_infer_btn.click(
+                run_cover_inference,
+                inputs=[cover_song_input, tts_target_spk, tts_tran_slider, slice_db_slider, tts_auto_f0, tts_output_name, output_format, output_dir_input, f0_predictor_drop, k_step_slider, second_encoding_check, loudness_adjust, auto_filename_chk, cluster_ratio_slider, noise_scale_slider, pad_seconds_slider, lg_num_slider, lgr_num_slider, enhancer_adaptive_key_slider, cover_vocal_vol, cover_bgm_vol, reverb_intensity, delay_intensity, cover_model_dropdown],
+                outputs=[tts_output_files, tts_audio_player, tts_players_html, cover_stage_html, tts_log_output],
+                show_progress="hidden"
+            )
+            cover_song_input.change(lambda p: p, inputs=[cover_song_input], outputs=[cover_source_player], queue=False, show_progress="hidden")
+
+            # Events
+            def refresh_projects():
+                projs = get_projects()
+                # Clear saved model config to force fresh scan on next update
+                config_path = "webui_model_config.json"
+                if os.path.exists(config_path):
+                    try:
+                        os.remove(config_path)
+                        print(" [Config] Cleared saved model config for fresh scan")
+                    except Exception as e:
+                        print(f" [Config] Failed to clear config: {e}")
+                return gr.update(choices=projs)
+                
+            def update_models(project_name):
+                # Try to load saved model config
+                saved_config = load_model_config()
+                use_saved = False
+                model_value = None
+                diff_model_value = None
+                diff_config_val = None
+                spk_list = []
+                
+                if saved_config and saved_config.get("project_name") == project_name:
+                    # Check if the saved model file still exists
+                    model_path = saved_config.get("model_path")
+                    if model_path and os.path.exists(model_path):
+                        use_saved = True
+                        model_value = model_path
+                        diff_model_value = saved_config.get("diff_model_path")
+                        diff_config_val = saved_config.get("diff_config_path")
+                        spk_list = saved_config.get("spk_list", [])
+                        print(f" [Config] Using saved model config: {model_path}")
+                
+                if not use_saved:
+                    # Fallback to original logic
+                    latest = get_latest_model(project_name)
+                    models = [m for m in glob.glob(f"logs/{project_name}/G_*.pth") if _get_model_steps(m) > 0]
+                    diff_models = get_diffusion_models(project_name)
+                    
+                    # Sort models
+                    models.sort(key=_get_model_steps, reverse=True)
+                    
+                    model_value = latest
+                    diff_model_value = diff_models[0] if diff_models else None
+                    
+                    # Try to get speaker list from config
+                    # Check multiple possible config paths
+                    config_paths = [
+                        f"configs/{project_name}.json",
+                        f"logs/{project_name}/config.json"
+                    ]
+                    if project_name == "44k":
+                        config_paths.append("configs/config.json")
+                    
+                    for config_path in config_paths:
+                        if os.path.exists(config_path):
+                            try:
+                                with open(config_path, 'r', encoding='utf-8') as f:
+                                    cfg = json.load(f)
+                                    if "spk" in cfg and cfg["spk"]:
+                                        spk_list = list(cfg["spk"].keys())
+                                        break # Stop at first found
+                            except:
+                                pass
+                
+                default_spk = None if len(spk_list) > 1 else (spk_list[0] if spk_list else None)
+                diff_config_path_val = diff_config_val if diff_config_val else _get_project_diffusion_config_path(project_name)
+                
+                # Get current lists for dropdowns
+                models = [m for m in glob.glob(f"logs/{project_name}/G_*.pth") if _get_model_steps(m) > 0]
+                diff_models = get_diffusion_models(project_name)
+                
+                # Sort models
+                models.sort(key=_get_model_steps, reverse=True)
+                if diff_models and (not diff_model_value or not os.path.exists(diff_model_value)):
+                    diff_model_value = diff_models[0]
+                shallow_diffusion_default = bool(diff_model_value and os.path.exists(diff_model_value))
+                
+                model_choices = [(os.path.basename(m), m) for m in models]
+                return (
+                    gr.update(choices=model_choices, value=model_value), 
+                    gr.update(choices=diff_models, value=diff_model_value),
+                    gr.update(value=diff_config_path_val),
+                    gr.update(choices=spk_list, value=default_spk),
+                    gr.update(choices=spk_list, value=default_spk),
+                    gr.update(value=shallow_diffusion_default)
+                )
+
+            def update_cover_models(project_name):
+                model_update, diff_update, diff_cfg_update, _spk_update, cover_spk_update, shallow_update = update_models(project_name)
+                return model_update, diff_update, diff_cfg_update, cover_spk_update, shallow_update
+            
+            def _load_model_worker(project_name, model_path, diff_model_path, diff_config_path, only_diffusion, shallow_diffusion, preferred_spk, vocoder_name):
+                global model_load_state, loading_lock
+                try:
+                    with loading_lock:
+                        config_path = f"configs/{project_name}.json"
+                        if not os.path.exists(config_path):
+                            log_cfg = f"logs/{project_name}/config.json"
+                            if os.path.exists(log_cfg):
+                                config_path = log_cfg
+                            elif project_name == "44k":
+                                config_path = "configs/config.json"
+
+                        print(f" [Debug] Triggering load_svc_model with: {model_path}")
+                        msg, spk_list = load_svc_model(model_path, config_path, diff_model_path, diff_config_path, only_diffusion, shallow_diffusion, vocoder_name)
+
+                        if spk_list:
+                            save_success = save_model_config(
+                                project_name=project_name,
+                                model_path=model_path,
+                                diff_model_path=diff_model_path,
+                                diff_config_path=diff_config_path,
+                                spk_list=spk_list
+                            )
+                            if save_success:
+                                print(f" [Config] Model config saved for: {model_path}")
+
+                        selected = preferred_spk if preferred_spk in spk_list else (spk_list[0] if len(spk_list) == 1 else None)
+                        model_load_state.update({
+                            "status": "done" if spk_list else "error",
+                            "message": msg,
+                            "spk_list": spk_list,
+                            "selected_spk": selected,
+                            "version": model_load_state.get("version", 0) + 1,
+                        })
+                except Exception as e:
+                    model_load_state.update({
+                        "status": "error",
+                        "message": f"模型加载失败: {e}",
+                        "spk_list": [],
+                        "selected_spk": None,
+                        "version": model_load_state.get("version", 0) + 1,
+                    })
+
+            def load_model_wrapper(project_name, model_path, diff_model_path, diff_config_path, only_diffusion, shallow_diffusion, preferred_spk, vocoder_name):
+                global model_load_state, loading_lock
+                if loading_lock.locked() or model_load_state.get("status") == "loading":
+                    return "⚠️ 模型正在加载中，请勿重复点击...", gr.update(), gr.update(), gr.update(active=True)
+                if not model_path:
+                    return "未选择模型！", gr.update(), gr.update(), gr.update(active=False)
+
+                model_load_state.update({
+                    "status": "loading",
+                    "message": f"⏳ 正在后台加载模型: {model_path}\n加载期间可以切换页面或调整参数。",
+                    "spk_list": [],
+                    "selected_spk": None,
+                    "version": model_load_state.get("version", 0) + 1,
+                })
+                threading.Thread(
+                    target=_load_model_worker,
+                    args=(project_name, model_path, diff_model_path, diff_config_path, only_diffusion, shallow_diffusion, preferred_spk, vocoder_name),
+                    daemon=True,
+                ).start()
+                return model_load_state["message"], gr.update(), gr.update(), gr.update(active=True)
+
+            def poll_model_load_state():
+                global model_load_state
+                status = model_load_state.get("status")
+                version = model_load_state.get("version", 0)
+                if model_load_state.get("last_reported_version") == version:
+                    return gr.update(), gr.update(), gr.update(), gr.update(active=status == "loading")
+                model_load_state["last_reported_version"] = version
+                spk_list = model_load_state.get("spk_list", [])
+                selected = model_load_state.get("selected_spk")
+                if spk_list:
+                    spk_update = gr.update(choices=spk_list, value=selected)
+                elif model_load_state.get("status") == "error":
+                    spk_update = gr.update(choices=[], value=None)
+                else:
+                    spk_update = gr.update()
+                return model_load_state.get("message", "就绪"), spk_update, spk_update, gr.update(active=status == "loading")
+
+            def poll_cover_model_load_state():
+                status, _spk_update, cover_spk_update, timer_update = poll_model_load_state()
+                return status, cover_spk_update, timer_update
+
+            refresh_btn.click(refresh_projects, outputs=project_dropdown, queue=False, show_progress="hidden")
+            project_dropdown.change(update_models, inputs=[project_dropdown], outputs=[model_dropdown, diff_model_dropdown, diff_config_path, spk_input, tts_target_spk, shallow_diffusion], queue=False, show_progress="hidden")
+            cover_refresh_btn.click(refresh_projects, outputs=cover_project_dropdown, queue=False, show_progress="hidden")
+            cover_project_dropdown.change(update_cover_models, inputs=[cover_project_dropdown], outputs=[cover_model_dropdown, cover_diff_model_dropdown, cover_diff_config_path, tts_target_spk, cover_shallow_diffusion], queue=False, show_progress="hidden")
+            
+            # Initial load
+            app.load(update_models, inputs=[project_dropdown], outputs=[model_dropdown, diff_model_dropdown, diff_config_path, spk_input, tts_target_spk, shallow_diffusion], queue=False, show_progress="hidden")
+            app.load(update_cover_models, inputs=[cover_project_dropdown], outputs=[cover_model_dropdown, cover_diff_model_dropdown, cover_diff_config_path, tts_target_spk, cover_shallow_diffusion], queue=False, show_progress="hidden")
+            
+            def clear_audio_inputs():
+                """清空所有音频输入"""
+                return (
+                    None,  # audio_input
+                    None,  # bgm_input
+                    None   # harmony_input
+                )
+            
+            model_load_timer = gr.Timer(1.0, active=False)
+            load_btn.click(
+                load_model_wrapper,
+                inputs=[project_dropdown, model_dropdown, diff_model_dropdown, diff_config_path, only_diffusion, shallow_diffusion, spk_input, vocoder_choice],
+                outputs=[status_text, spk_input, tts_target_spk, model_load_timer],
+                queue=False,
+                show_progress="hidden"
+            )
+            model_load_timer.tick(
+                poll_model_load_state,
+                inputs=None,
+                outputs=[status_text, spk_input, tts_target_spk, model_load_timer],
+                queue=False,
+                show_progress="hidden"
+            )
+            cover_model_load_timer = gr.Timer(1.0, active=False)
+            cover_load_btn.click(
+                load_model_wrapper,
+                inputs=[cover_project_dropdown, cover_model_dropdown, cover_diff_model_dropdown, cover_diff_config_path, cover_only_diffusion, cover_shallow_diffusion, tts_target_spk, cover_vocoder_choice],
+                outputs=[cover_status_text, tts_target_spk, spk_input, cover_model_load_timer],
+                queue=False,
+                show_progress="hidden"
+            )
+            cover_model_load_timer.tick(
+                poll_cover_model_load_state,
+                inputs=None,
+                outputs=[cover_status_text, tts_target_spk, cover_model_load_timer],
+                queue=False,
+                show_progress="hidden"
+            )
+            infer_btn.click(
+                run_inference, 
+                inputs=[audio_input, bgm_input, harmony_input, spk_input, tran_slider, slice_db_slider, auto_f0_check, output_name_input, output_format, output_dir_input, variations_check, f0_predictor_drop, k_step_slider, second_encoding_check, loudness_adjust, vocal_vol_slider, bgm_vol_slider, harmony_vol_slider, auto_filename_chk, cluster_ratio_slider, noise_scale_slider, pad_seconds_slider, lg_num_slider, lgr_num_slider, enhancer_adaptive_key_slider, post_uvr_dereverb_chk, reverb_intensity, delay_intensity],
+                outputs=[output_files, output_audio_player, output_players_html, log_output],
+                show_progress="minimal",
+                show_progress_on=[log_output]
+            )
+            cache_clean_btn.click(clean_cache_ui, outputs=[cache_stats], queue=False, show_progress="hidden")
+            remix_btn.click(
+                remix_audio,
+                inputs=[vocal_vol_slider, bgm_vol_slider, harmony_vol_slider, output_format],
+                outputs=[output_files, output_audio_player, output_players_html, log_output],
+                show_progress="minimal",
+                show_progress_on=[log_output]
+            )
+            # 添加一键清空按钮事件
+            clear_inputs_btn.click(
+                clear_audio_inputs,
+                inputs=[],
+                outputs=[audio_input, bgm_input, harmony_input],
+                queue=False,
+                show_progress="hidden"
+            )
+
+        # --- Tab: Audio Slicer ---
+        with gr.Column(elem_id="slicer_panel", visible=False):
+            gr.Markdown("### ✂️ 智能音频切片工具 (VAD 增强版)", elem_classes=["page_intro"])
+            gr.Markdown("此工具可以将长音频自动切分为适合训练的短片段（通常 3-10 秒），并自动去除无声部分。**已加入淡入淡出功能以消除边界杂音。**", elem_classes=["page_intro"])
+            
+            with gr.Row():
+                with gr.Column():
+                    slicer_folder_dropdown = gr.Dropdown(
+                        label="选择要切片的数据集文件夹", 
+                        choices=get_raw_dataset_dirs(), 
+                        info="对应 dataset_raw 下的文件夹名称"
+                    )
+                    refresh_slicer_dirs_btn = gr.Button("🔄 刷新文件夹列表")
+                    
+                    with gr.Row():
+                        slicer_min_slider = gr.Slider(label="最小长度 (秒)", minimum=0.1, maximum=10, value=2.0, step=0.1)
+                        slicer_max_slider = gr.Slider(label="最大长度 (秒)", minimum=5, maximum=30, value=12.0, step=0.1)
+                    
+                    with gr.Row():
+                        slicer_db_slider = gr.Slider(label="静音阈值 (dB)", minimum=-100, maximum=0, value=-40, info="越小越灵敏。建议 -40 到 -50")
+                        slicer_gap_slider = gr.Slider(label="最小停顿合并 (秒)", minimum=0.1, maximum=2.0, value=0.5, step=0.1, info="小于此长度的停顿将不被切断。建议 0.5s")
+                    
+                    with gr.Row():
+                        slicer_fade_slider = gr.Slider(label="淡入淡出长度 (ms)", minimum=0, maximum=500, value=50, step=5, info="消除开头结尾的‘电杂音’。建议 50-100ms")
+                    
+                    run_slicer_btn = gr.Button("🚀 开始 VAD 切片 (Start VAD Slicing)", variant="primary")
+                
+                with gr.Column():
+                    slicer_output = gr.Textbox(label="运行状态", lines=10)
+            
+            with gr.Accordion("💡 使用说明", open=True):
+                gr.Markdown("""
+                1. **准备素材**：在 `dataset_raw` 目录下新建一个文件夹（如 `yuan`），把你的纯净长音频文件放进去。
+                2. **VAD 分割**：程序会基于声音活动检测（VAD）自动切分，并自动跳过纯静音部分。
+                3. **淡入淡出**：为了解决你提到的“2秒音频开头结尾杂音”问题，程序会自动在每个切片应用淡入淡出。
+                4. **参数建议**：
+                   - 训练 sovits 模型建议片段长度在 **2-12 秒** 之间。
+                   - 如果发现切出来的片段太长，可以调小“静音阈值”或减小“最大长度”。
+                """)
+
+            # Slicer Events
+            refresh_slicer_dirs_btn.click(lambda: gr.update(choices=get_raw_dataset_dirs()), outputs=slicer_folder_dropdown, queue=False, show_progress="hidden")
+            run_slicer_btn.click(
+                run_vad_slicer_func,
+                inputs=[slicer_folder_dropdown, slicer_min_slider, slicer_max_slider, slicer_db_slider, slicer_fade_slider, slicer_gap_slider],
+                outputs=slicer_output
+            )
+
+        # --- Tab 2: Training ---
+        with gr.Column(elem_id="training_panel", visible=False):
+            gr.Markdown("### 🛠️ 训练工作台 (Training Dashboard)", elem_classes=["page_intro"])
+            gr.Markdown("请按照 **从左到右，从上到下** 的顺序操作。", elem_classes=["page_intro"])
+            
+            with gr.Row():
+                # Left Column: Setup & Processing
+                with gr.Column(scale=1):
+                    gr.Markdown("#### 1️⃣ 第一步：项目设置 (Project Setup)", elem_classes=["step_title"])
+                    with gr.Row():
+                        train_project_name = gr.Dropdown(
+                            label="当前项目名称 (Project)", 
+                            choices=get_projects(), 
+                            value="44k", 
+                            allow_custom_value=True, 
+                            info="选择现有项目继续训练，或输入新名称创建新项目"
+                        )
+                        refresh_proj_btn = gr.Button("🔄", scale=0)
+                    
+                    init_btn = gr.Button("初始化/加载配置 (Load Config)")
+                    init_output = gr.Textbox(label="项目状态", lines=1, interactive=False, value="请先选择项目并点击初始化")
+                    
+                    gr.Markdown("---")
+                    
+                    gr.Markdown("#### 2️⃣ 第二步：数据预处理 (Preprocess)", elem_classes=["step_title"])
+                    gr.Markdown("**⚠️ 注意：仅在【首次训练】或【添加新音频】时需要操作！**\n如果只是继续训练昨天的进度，请直接跳到右侧第3步。", elem_classes=["step_notice"])
+                    
+                    with gr.Row():
+                        dataset_selection = gr.CheckboxGroup(
+                            label="选择数据源文件夹 (Select Data)", 
+                            choices=get_raw_dataset_dirs(), 
+                            value=[],  # Default to empty to prevent accidents
+                            info="请勾选本次要处理的声音文件夹 (例如 rongrong)",
+                            elem_classes=["data_picker"],
+                        )
+                        refresh_data_btn = gr.Button("🔄", scale=0)
+                    
+                    with gr.Row():
+                        preprocess_encoder = gr.Dropdown(
+                            label="语音编码器 (Speech Encoder)",
+                            choices=["vec768l12", "vec256l9", "hubertsoft", "whisper-ppg", "cnhubertlarge", "dphubert", "whisper-ppg-large", "wavlmbase+"],
+                            value="vec768l12",
+                            info="决定声音的音色特征，推荐默认 vec768l12"
+                        )
+                        preprocess_f0 = gr.Dropdown(
+                            label="F0预测器 (F0 Predictor)",
+                            choices=["crepe", "pm", "dio", "harvest", "rmvpe", "fcpe"],
+                            value="rmvpe",
+                            info="决定音高提取的准确性。**推荐使用 rmvpe**。"
+                        )
+                    
+                    with gr.Row():
+                        preprocess_vol_aug = gr.Checkbox(
+                            label="启用响度嵌入和音量增强 (Volume Embedding)",
+                            value=False,
+                            info="是否启用响度嵌入和音量增强，启用后可以根据输入源控制输出响度，但对数据集质量的要求更高。**仅支持vec768l12编码器**",
+                            elem_classes=["option_card"],
+                        )
+                        preprocess_num_processes = gr.Slider(
+                            label="预处理并行数 (Processes)",
+                            minimum=1,
+                            maximum=os.cpu_count(),
+                            value=1,
+                            step=1,
+                            info="并行处理文件的数量。显存 8GB 以下请设为 1；12GB+ 可设为 2-4"
+                        )
+                    
+                    with gr.Row():
+                        preprocess_use_diff = gr.Checkbox(
+                            label="启用浅扩散 (Shallow Diffusion)",
+                            value=True,
+                            info="是否使用浅扩散模型，如要训练浅扩散请勾选此项，将会在预处理时生成浅扩散必备的特征文件（确定不训练可以不勾，能节省一点空间）",
+                            elem_classes=["option_card"],
+                        )
+                        preprocess_force_reprocess = gr.Checkbox(
+                            label="强制重新预处理 (Force)",
+                            value=False,
+                            info="⚠️ 勾选后会删除已生成的特征文件并重新提取。当你更换 F0 预测器或编码器时，请务必勾选此项以解决电音问题。",
+                            elem_classes=["option_card"],
+                        )
+
+                    preprocess_btn = gr.Button("执行数据清理与预处理 (Process)", variant="secondary")
+                    preprocess_output = gr.Textbox(label="预处理日志", lines=3)
+                    
+                    with gr.Accordion("❓ 这个按钮做了什么？(点击查看)", open=False):
+                        gr.Markdown("""
+                        **此步骤会自动执行以下操作：**
+                        1. **自动备份**：把你的原始文件复制一份到 `_backup` 文件夹（防手滑）。
+                        2. **格式统一**：将音频转为 44100Hz 采样率。
+                        3. **基础降噪**：去除 70Hz 以下的低频噪音（如电流声、闷响）。
+                        4. **切除静音**：自动切掉头尾的静音部分。
+                        5. **长度过滤**：剔除短于2秒或长于15秒的片段。
+                        
+                        **⚠️ 重要提示：**
+                        它**不能**去除背景音乐（BGM）或人声伴奏！
+                        如果你的素材有背景音乐，请先使用 **UVR5** 软件分离出纯人声（Dry Vocals）后再放入文件夹。
+                        """)
+
+                # Right Column: Training Control
+                with gr.Column(scale=1):
+                    gr.Markdown("#### 3️⃣ 第三步：训练执行 (Training)")
+                    gr.Markdown("**🛡️ 质量建议：** 解决电音的关键在于 **预处理配置**。推荐：编码器 `vec768l12` + F0预测器 `fcpe`。")
+                    
+                    with gr.Accordion("⚙️ 资源占用/效率设置 (Resource Settings)", open=True):
+                        # Hardware Info & Presets
+                        presets_data, ram_gb, vram_gb, gpu_name = get_presets_logic()
+                        gr.Markdown(f"🖥️ **系统硬件检测**: GPU: {gpu_name} ({vram_gb}GB VRAM) | RAM: {ram_gb}GB")
+                        
+                        preset_choices = [
+                            "🐢 办公模式 (Office)",
+                            "⚖️ 均衡模式 (Balanced)",
+                            "🚀 全速模式 (High)"
+                        ]
+                        
+                        preset_radio = gr.Radio(
+                            choices=preset_choices,
+                            value="⚖️ 均衡模式 (Balanced)",
+                            label="⚡ 性能预设 (Performance Presets)",
+                            info="仅调节 CPU 线程以适应硬件。Batch Size 可自由调节。"
+                        )
+                        
+                        with gr.Row():
+                            batch_size_slider = gr.Slider(label="批次大小 (Batch Size)", minimum=1, maximum=40, value=6, step=1, info="大batch有助于训练但显著增加显存占用。6G显存建议设定为4", interactive=True)
+                            num_workers_slider = gr.Slider(label="CPU加载线程 (Num Workers)", minimum=0, maximum=16, value=0, step=1, info="内存/CPU占用。")
+                            all_in_mem_check = gr.Checkbox(label="全载入内存 (All In Mem)", value=False, info="🚀 极速模式：将所有数据读入RAM。")
+
+                    with gr.Accordion("🔒 单模型锁定信息", open=False):
+                        train_list_display = gr.Textbox(label="训练列表路径 (Training Files)", value="", interactive=False)
+                        val_list_display = gr.Textbox(label="验证列表路径 (Validation Files)", value="", interactive=False)
+
+                    with gr.Row():
+                        scratch_btn = gr.Button("⚡ 从头训练 (全流程)", variant="primary", scale=2)
+                        continue_btn = gr.Button("▶️ 继续训练 (直接开始)", variant="secondary", scale=2)
+                    
+                    train_btn = gr.Button("🚀 开始/继续训练 (Start Training)", variant="primary", scale=2, visible=False) # Hidden but kept for logic
+                    stop_btn = gr.Button("⏹️ 停止训练 (Stop Training)", variant="stop")
+                    
+                    with gr.Row():
+                        train_status = gr.Textbox(label="训练服务状态", lines=2, scale=4)
+                        refresh_status_btn = gr.Button("🔄 刷新状态", scale=1)
+
+                    with gr.Accordion("🧪 扩散训练 (可选，用于改善电音/毛刺)", open=False):
+                        diff_cfg_path_box = gr.Textbox(label="扩散配置路径", value="", interactive=False)
+                        with gr.Row():
+                            diff_batch_size = gr.Slider(label="扩散 Batch Size", minimum=1, maximum=64, value=8, step=1)
+                            diff_num_workers = gr.Slider(label="扩散 Num Workers", minimum=0, maximum=16, value=2, step=1)
+                        diff_train_btn = gr.Button("🧪 开始扩散训练 (Start Diffusion)", variant="primary")
+                        diff_stop_btn = gr.Button("⏹️ 停止扩散训练 (Stop Diffusion)", variant="stop")
+                        with gr.Row():
+                            diff_status = gr.Textbox(label="扩散训练状态", lines=2, scale=4)
+                            diff_refresh_btn = gr.Button("🔄 刷新扩散状态", scale=1)
+                    
+                    gr.Markdown("---")
+                    gr.Markdown("#### 4️⃣ 监控工具 (Monitor)")
+                    tb_btn = gr.Button("📊 启动 TensorBoard (查看Loss图表)")
+                    tb_output = gr.Textbox(label="工具状态", lines=1)
+            
+            # Helper text
+            with gr.Accordion("📖 新手操作指南 (点击展开)", open=False):
+                gr.Markdown("""
+                **场景 A：我要训练 rongrong（单模型）**
+                1. 在电脑文件夹 `dataset_raw` 下新建 `rongrong` 文件夹，放入 wav 音频。
+                2. 在左上角选择项目 `rongrong`，点击“初始化/加载配置”。
+                3. 在“选择数据源”里勾选 `rongrong`，点击“执行数据清理与预处理”。
+                4. 点击右侧“开始/继续训练”。
+
+                **场景 B：我要训练 luo（单模型，项目名固定为 44k）**
+                1. 在左上角选择项目 `44k`，点击“初始化/加载配置”。
+                2. 仅在首次训练/新增音频时，勾选 `luo` 并执行预处理。
+                3. 点击右侧“开始/继续训练”。
+                """)
+
+            def init_project_wrapper(project_name):
+                msg = init_project_func(project_name)
+                # Auto-refresh and SMART SELECT dataset dirs after init
+                locked_dirs = get_project_locked_dataset_dirs(project_name)
+                if locked_dirs is not None:
+                    dirs = locked_dirs
+                    selected = locked_dirs
+                    dataset_update = gr.update(choices=dirs, value=selected, interactive=False)
+                else:
+                    dirs = get_raw_dataset_dirs()
+                    selected = match_datasets_by_project(project_name)
+                    dataset_update = gr.update(choices=dirs, value=selected, interactive=True)
+
+                train_list, val_list = get_project_training_filelists(project_name)
+                diff_cfg_path = _get_project_diffusion_config_path(project_name)
+                return msg, dataset_update, gr.update(value=train_list), gr.update(value=val_list), gr.update(value=diff_cfg_path)
+
+            init_btn.click(init_project_wrapper, inputs=[train_project_name], outputs=[init_output, dataset_selection, train_list_display, val_list_display, diff_cfg_path_box])
+
+            def refresh_train_projects():
+                return gr.update(choices=get_projects())
+            refresh_proj_btn.click(refresh_train_projects, outputs=[train_project_name])
+
+            def refresh_dataset_dirs(project_name):
+                locked_dirs = get_project_locked_dataset_dirs(project_name)
+                if locked_dirs is not None:
+                    return gr.update(choices=locked_dirs, value=locked_dirs, interactive=False)
+                dirs = get_raw_dataset_dirs()
+                return gr.update(choices=dirs, value=[], interactive=True)
+
+            # Preset Logic
+            def apply_preset_wrapper(preset_label):
+                key = "balanced"
+                if "Office" in preset_label: key = "office"
+                elif "High" in preset_label: key = "high"
+                
+                # Re-fetch logic (it's fast)
+                p_data, _, _, _ = get_presets_logic()
+                p = p_data[key]
+                
+                # Only update workers and all_in_mem, keep batch size flexible or update to preset default?
+                # User asked to make batch size modifiable. Let's update it to preset default but keep it interactive.
+                return gr.update(value=p["bs"]), p["nw"], p["aim"]
+
+            preset_radio.change(apply_preset_wrapper, inputs=[preset_radio], outputs=[batch_size_slider, num_workers_slider, all_in_mem_check])
+
+            refresh_data_btn.click(refresh_dataset_dirs, inputs=[train_project_name], outputs=[dataset_selection])
+            preprocess_btn.click(
+                run_preprocess_func, 
+                inputs=[dataset_selection, train_project_name, preprocess_encoder, preprocess_f0, preprocess_vol_aug, preprocess_use_diff, preprocess_force_reprocess, preprocess_num_processes], 
+                outputs=preprocess_output
+            )
+            
+            def train_from_scratch_combined(selected_dirs, project_name, batch_size, num_workers, all_in_mem, encoder_name, f0_predictor_name, use_vol_aug, use_diff, force_reprocess, num_processes):
+                if not selected_dirs:
+                    yield "❌ 请先选择数据源文件夹！", gr.update(value="⚡ 从头训练 (全流程)", interactive=True)
+                    return
+                
+                # 0. Clean up old logs/checkpoints to ensure starting from 0
+                log_dir = f"logs/{project_name}"
+                if os.path.exists(log_dir):
+                    yield f"🗑️ 正在清理旧的训练日志和权重: {log_dir} ...", gr.update(value="⏳ 启动中...", interactive=False)
+                    try:
+                        import shutil
+                        # Instead of deleting the whole dir (which might be used by tensorboard), 
+                        # just delete the files inside that look like checkpoints or logs
+                        for filename in os.listdir(log_dir):
+                            file_path = os.path.join(log_dir, filename)
+                            if os.path.isfile(file_path):
+                                os.unlink(file_path)
+                            elif os.path.isdir(file_path):
+                                shutil.rmtree(file_path)
+                        yield "✅ 旧记录已清理，将从第 0 步开始训练。", gr.update(value="⏳ 启动中...", interactive=False)
+                    except Exception as e:
+                        yield f"⚠️ 清理旧记录失败 (可能文件被占用): {e}", gr.update(value="⚡ 从头训练 (全流程)", interactive=True)
+
+                # 1. Preprocess
+                for msg in run_preprocess_func(selected_dirs, project_name, encoder_name, f0_predictor_name, use_vol_aug, use_diff, force_reprocess, num_processes):
+                    yield msg, gr.update(value="⏳ 启动中...", interactive=False)
+                
+                # 2. Start Training
+                yield "🚀 预处理完成，正在启动训练...", gr.update(value="⏳ 启动中...", interactive=False)
+                msg, btn_update = start_training_func(project_name, batch_size, num_workers, all_in_mem)
+                yield msg, btn_update
+
+            def continue_training_wrapper(project_name, batch_size, num_workers, all_in_mem):
+                msg, btn_update = start_training_func(project_name, batch_size, num_workers, all_in_mem)
+                return msg, btn_update
+
+            scratch_btn.click(
+                train_from_scratch_combined, 
+                inputs=[dataset_selection, train_project_name, batch_size_slider, num_workers_slider, all_in_mem_check, preprocess_encoder, preprocess_f0, preprocess_vol_aug, preprocess_use_diff, preprocess_force_reprocess, preprocess_num_processes], 
+                outputs=[preprocess_output, scratch_btn]
+            )
+            continue_btn.click(
+                continue_training_wrapper, 
+                inputs=[train_project_name, batch_size_slider, num_workers_slider, all_in_mem_check], 
+                outputs=[train_status, continue_btn]
+            )
+
+            train_btn.click(start_training_func, inputs=[train_project_name, batch_size_slider, num_workers_slider, all_in_mem_check], outputs=[train_status, train_btn])
+            stop_btn.click(stop_training_func, outputs=[train_status, scratch_btn]) # Use scratch_btn as the one to re-enable
+            tb_btn.click(launch_tensorboard_func, inputs=[train_project_name], outputs=[tb_output])
+            refresh_status_btn.click(check_training_status, inputs=None, outputs=[train_status, train_btn, train_project_name, batch_size_slider, num_workers_slider, all_in_mem_check], queue=False, show_progress="hidden")
+
+            diff_train_btn.click(start_diffusion_training_func, inputs=[train_project_name, diff_batch_size, diff_num_workers], outputs=[diff_status, diff_train_btn])
+            diff_stop_btn.click(stop_diffusion_training_func, outputs=[diff_status, diff_train_btn])
+            diff_refresh_btn.click(check_diffusion_training_status, inputs=None, outputs=[diff_status, diff_train_btn, diff_cfg_path_box, diff_batch_size, diff_num_workers], queue=False, show_progress="hidden")
+
+            # Periodic Status Check (Optional, but good for sync) & Initial Load
+            # app.load(check_training_status, inputs=None, outputs=[train_status, train_btn, train_project_name, batch_size_slider, num_workers_slider, all_in_mem_check])
+
+def cleanup_on_exit():
+    """Clean up processes and temp files on exit"""
+    import signal
+    
+    def signal_handler(sig, frame):
+        print("\n[Info] Received shutdown signal, cleaning up...")
+        
+        # Terminate any running training processes
+        global training_process, diffusion_training_process
+        
+        if training_process is not None:
+            try:
+                training_process.terminate()
+                training_process.wait(timeout=3)
+                print("[Info] Training process terminated")
+            except:
+                try:
+                    training_process.kill()
+                    print("[Info] Training process killed")
+                except:
+                    pass
+        
+        if diffusion_training_process is not None:
+            try:
+                diffusion_training_process.terminate()
+                diffusion_training_process.wait(timeout=3)
+                print("[Info] Diffusion training process terminated")
+            except:
+                try:
+                    diffusion_training_process.kill()
+                    print("[Info] Diffusion training process killed")
+                except:
+                    pass
+        
+        # Clean up temp PID file
+        try:
+            if os.path.exists("temp_pid.txt"):
+                os.remove("temp_pid.txt")
+        except:
+            pass
+        
+        # Clean up model resources
+        global current_model
+        if current_model is not None:
+            try:
+                current_model.unload_model()
+                print("[Info] Model unloaded")
+            except:
+                pass
+            current_model = None
+        
+        torch.cuda.empty_cache()
+        gc.collect()
+        sys.exit(0)
+    
+    # Register signal handlers
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    # Save PID for external cleanup
+    try:
+        with open("temp_pid.txt", "w") as f:
+            f.write(str(os.getpid()))
+    except:
+        pass
+    
+    print("[Info] Signal handlers registered, waiting for shutdown...")
+
+if __name__ == "__main__":
+    # Print system information for debugging
+    print("=" * 60)
+    print("System Information:")
+    print("-" * 60)
+    print(f"PyTorch version: {torch.__version__}")
+    print(f"CUDA available: {torch.cuda.is_available()}")
+    print(f"MPS available: {torch.backends.mps.is_available()}")
+    print(f"MPS built: {torch.backends.mps.is_built()}")
+    print(f"Best device: {get_best_device()}")
+    
+    # Get detailed system info
+    ram, vram, gpu = get_system_info()
+    print(f"RAM: {ram} GB")
+    print(f"VRAM: {vram} GB")
+    print(f"GPU: {gpu}")
+    print("=" * 60)
+    print()
+    
+    # Check ONNX runtime providers
+    try:
+        import onnxruntime as ort
+        providers = ort.get_available_providers()
+        print(f"ONNX Runtime available providers: {providers}")
+        if 'CoreMLExecutionProvider' in providers:
+            print("✓ CoreML (Apple GPU) support available for ONNX models")
+    except ImportError:
+        print("⚠ ONNX Runtime not available")
+    print()
+    
+    # Clean up old cache on startup
+    try:
+        deleted_files, deleted_bytes = cleanup_results_cache()
+        if deleted_files > 0:
+            print(f"Startup Cleanup: Removed {deleted_files} files ({_format_bytes(deleted_bytes)}) from cache.")
+    except Exception as e:
+        print(f"Startup Cleanup Failed: {e}")
+
+    # Setup cleanup on exit
+    cleanup_on_exit()
+
+    # Enable queue for stable connection and progress bars
+    allowed_paths = [
+        os.path.abspath(os.getcwd()),
+        os.path.abspath("results"),
+        os.path.abspath(os.path.join("results", "web_output")),
+        os.path.abspath(os.path.join("results", "temp_cache")),
+        os.path.abspath(gr_utils.get_upload_folder()),
+        os.path.abspath(tempfile.gettempdir()),
+    ]
+    app.queue(max_size=20)
+    server_port = int(os.environ.get("GRADIO_SERVER_PORT", "7860"))
+    app.launch(
+        inbrowser=True,
+        server_name="127.0.0.1",
+        server_port=server_port,
+        allowed_paths=allowed_paths,
+        max_file_size="20gb",
+        show_error=True,
+        theme=local_theme,
+    )

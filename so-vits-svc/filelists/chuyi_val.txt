@@ -1,0 +1,2 @@
+./dataset/44k/chuyi/202471721750_7.wav
+./dataset/44k/chuyi/2024717204237_12.wav

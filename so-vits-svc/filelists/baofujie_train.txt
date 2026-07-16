@@ -1,0 +1,51 @@
+./dataset/44k/baofujie/audio_013_seg_002.wav
+./dataset/44k/baofujie/audio_013_seg_003.wav
+./dataset/44k/baofujie/2323232.wav
+./dataset/44k/baofujie/sdsds.wav
+./dataset/44k/baofujie/audio_005_seg_003.wav
+./dataset/44k/baofujie/audio_013_seg_006.wav
+./dataset/44k/baofujie/32324 (2).wav
+./dataset/44k/baofujie/audio_000_seg_002.wav
+./dataset/44k/baofujie/audio_000_seg_001.wav
+./dataset/44k/baofujie/audio_005_seg_001.wav
+./dataset/44k/baofujie/audio_018_seg_000.wav
+./dataset/44k/baofujie/audio_005_seg_004.wav
+./dataset/44k/baofujie/audio_017_seg_000.wav
+./dataset/44k/baofujie/audio_008_seg_000.wav
+./dataset/44k/baofujie/audio_018_seg_002.wav
+./dataset/44k/baofujie/audio_012_seg_000.wav
+./dataset/44k/baofujie/audio_001_seg_000.wav
+./dataset/44k/baofujie/audio_003_seg_000.wav
+./dataset/44k/baofujie/32324 (3).wav
+./dataset/44k/baofujie/audio_004_seg_000.wav
+./dataset/44k/baofujie/audio_011_seg_000.wav
+./dataset/44k/baofujie/32324 (5).wav
+./dataset/44k/baofujie/112323.wav
+./dataset/44k/baofujie/audio_005_seg_000.wav
+./dataset/44k/baofujie/audio_000_seg_000.wav
+./dataset/44k/baofujie/audio_019_seg_000.wav
+./dataset/44k/baofujie/audio_014_seg_000.wav
+./dataset/44k/baofujie/audio_013_seg_000.wav
+./dataset/44k/baofujie/32324 (4).wav
+./dataset/44k/baofujie/audio_009_seg_000.wav
+./dataset/44k/baofujie/audio_017_seg_001.wav
+./dataset/44k/baofujie/645454.wav
+./dataset/44k/baofujie/32324 (6).wav
+./dataset/44k/baofujie/audio_006_seg_000.wav
+./dataset/44k/baofujie/audio_017_seg_002.wav
+./dataset/44k/baofujie/audio_016_seg_000.wav
+./dataset/44k/baofujie/32324 (1).wav
+./dataset/44k/baofujie/audio_016_seg_001.wav
+./dataset/44k/baofujie/242425.wav
+./dataset/44k/baofujie/vvvzz.wav
+./dataset/44k/baofujie/audio_019_seg_001.wav
+./dataset/44k/baofujie/audio_018_seg_001.wav
+./dataset/44k/baofujie/audio_010_seg_000.wav
+./dataset/44k/baofujie/audio_016_seg_002.wav
+./dataset/44k/baofujie/audio_013_seg_005.wav
+./dataset/44k/baofujie/audio_019_seg_002.wav
+./dataset/44k/baofujie/audio_002_seg_000.wav
+./dataset/44k/baofujie/32324 (7).wav
+./dataset/44k/baofujie/audio_013_seg_004.wav
+./dataset/44k/baofujie/audio_013_seg_001.wav
+./dataset/44k/baofujie/audio_005_seg_002.wav

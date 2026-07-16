@@ -1,0 +1,2 @@
+./dataset/44k/baofujie/audio_007_seg_000.wav
+./dataset/44k/baofujie/audio_015_seg_000.wav

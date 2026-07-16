@@ -1,0 +1,2 @@
+./dataset/44k/xingyi/Voice (251031.1256)_0024.wav
+./dataset/44k/xingyi/Voice (251031.1308)_0033.wav

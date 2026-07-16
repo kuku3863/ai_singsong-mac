@@ -1,0 +1,31 @@
+ffmpeg-python
+Flask
+Flask_Cors
+gradio
+numpy
+pyworld
+scipy
+SoundFile
+torch
+torchaudio
+torchcrepe
+tqdm
+rich
+loguru
+scikit-maad
+praat-parselmouth
+onnx
+# onnxsim
+# onnxoptimizer
+# fairseq==0.12.2
+librosa
+tensorboard
+tensorboardX
+transformers
+edge_tts
+langdetect
+pyyaml
+pynvml
+faiss-cpu
+einops
+local_attention

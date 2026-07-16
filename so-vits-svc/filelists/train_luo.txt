@@ -1,0 +1,310 @@
+./dataset/44k/luo/Voice (251027.2351)_0.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_1.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_10.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_100.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_101.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_102.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_103.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_104.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_105.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_106.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_107.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_108.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_109.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_11.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_110.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_111.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_112.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_113.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_114.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_115.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_116.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_117.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_118.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_119.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_12.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_120.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_121.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_122.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_123.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_124.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_125.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_126.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_127.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_128.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_129.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_13.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_130.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_131.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_132.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_133.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_134.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_135.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_136.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_137.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_138.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_139.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_14.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_140.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_141.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_142.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_143.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_144.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_145.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_146.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_147.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_148.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_149.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_15.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_150.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_151.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_152.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_153.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_154.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_155.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_156.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_157.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_158.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_159.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_16.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_160.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_161.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_162.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_163.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_164.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_165.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_166.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_167.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_168.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_169.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_17.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_170.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_171.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_172.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_173.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_174.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_175.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_176.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_177.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_178.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_18.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_19.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_2.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_20.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_21.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_22.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_23.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_24.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_25.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_26.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_27.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_28.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_29.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_3.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_30.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_31.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_32.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_33.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_34.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_35.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_36.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_37.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_38.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_39.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_4.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_40.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_41.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_42.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_43.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_44.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_45.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_46.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_47.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_48.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_49.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_5.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_50.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_51.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_52.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_53.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_54.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_55.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_56.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_57.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_58.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_59.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_6.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_60.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_61.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_62.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_63.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_64.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_65.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_66.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_67.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_68.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_69.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_7.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_70.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_71.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_72.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_73.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_74.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_75.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_76.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_77.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_78.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_79.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_8.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_80.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_81.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_82.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_83.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_84.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_85.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_86.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_87.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_88.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_89.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_9.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_90.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_91.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_92.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_93.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_94.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_95.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_96.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_97.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_98.wav|luo
+./dataset/44k/luo/Voice (251027.2351)_99.wav|luo
+./dataset/44k/luo/Voice1_0.wav|luo
+./dataset/44k/luo/Voice1_1.wav|luo
+./dataset/44k/luo/Voice1_10.wav|luo
+./dataset/44k/luo/Voice1_11.wav|luo
+./dataset/44k/luo/Voice1_12.wav|luo
+./dataset/44k/luo/Voice1_13.wav|luo
+./dataset/44k/luo/Voice1_14.wav|luo
+./dataset/44k/luo/Voice1_15.wav|luo
+./dataset/44k/luo/Voice1_16.wav|luo
+./dataset/44k/luo/Voice1_17.wav|luo
+./dataset/44k/luo/Voice1_18.wav|luo
+./dataset/44k/luo/Voice1_19.wav|luo
+./dataset/44k/luo/Voice1_2.wav|luo
+./dataset/44k/luo/Voice1_20.wav|luo
+./dataset/44k/luo/Voice1_21.wav|luo
+./dataset/44k/luo/Voice1_22.wav|luo
+./dataset/44k/luo/Voice1_23.wav|luo
+./dataset/44k/luo/Voice1_24.wav|luo
+./dataset/44k/luo/Voice1_25.wav|luo
+./dataset/44k/luo/Voice1_26.wav|luo
+./dataset/44k/luo/Voice1_27.wav|luo
+./dataset/44k/luo/Voice1_28.wav|luo
+./dataset/44k/luo/Voice1_29.wav|luo
+./dataset/44k/luo/Voice1_3.wav|luo
+./dataset/44k/luo/Voice1_30.wav|luo
+./dataset/44k/luo/Voice1_4.wav|luo
+./dataset/44k/luo/Voice1_5.wav|luo
+./dataset/44k/luo/Voice1_6.wav|luo
+./dataset/44k/luo/Voice1_7.wav|luo
+./dataset/44k/luo/Voice1_8.wav|luo
+./dataset/44k/luo/Voice1_9.wav|luo
+./dataset/44k/luo/Voice_0.wav|luo
+./dataset/44k/luo/Voice_1.wav|luo
+./dataset/44k/luo/Voice_10.wav|luo
+./dataset/44k/luo/Voice_100.wav|luo
+./dataset/44k/luo/Voice_101.wav|luo
+./dataset/44k/luo/Voice_102.wav|luo
+./dataset/44k/luo/Voice_103.wav|luo
+./dataset/44k/luo/Voice_104.wav|luo
+./dataset/44k/luo/Voice_11.wav|luo
+./dataset/44k/luo/Voice_12.wav|luo
+./dataset/44k/luo/Voice_13.wav|luo
+./dataset/44k/luo/Voice_14.wav|luo
+./dataset/44k/luo/Voice_15.wav|luo
+./dataset/44k/luo/Voice_16.wav|luo
+./dataset/44k/luo/Voice_17.wav|luo
+./dataset/44k/luo/Voice_18.wav|luo
+./dataset/44k/luo/Voice_19.wav|luo
+./dataset/44k/luo/Voice_2.wav|luo
+./dataset/44k/luo/Voice_20.wav|luo
+./dataset/44k/luo/Voice_21.wav|luo
+./dataset/44k/luo/Voice_22.wav|luo
+./dataset/44k/luo/Voice_23.wav|luo
+./dataset/44k/luo/Voice_24.wav|luo
+./dataset/44k/luo/Voice_25.wav|luo
+./dataset/44k/luo/Voice_26.wav|luo
+./dataset/44k/luo/Voice_27.wav|luo
+./dataset/44k/luo/Voice_28.wav|luo
+./dataset/44k/luo/Voice_29.wav|luo
+./dataset/44k/luo/Voice_3.wav|luo
+./dataset/44k/luo/Voice_30.wav|luo
+./dataset/44k/luo/Voice_31.wav|luo
+./dataset/44k/luo/Voice_32.wav|luo
+./dataset/44k/luo/Voice_33.wav|luo
+./dataset/44k/luo/Voice_34.wav|luo
+./dataset/44k/luo/Voice_35.wav|luo
+./dataset/44k/luo/Voice_36.wav|luo
+./dataset/44k/luo/Voice_37.wav|luo
+./dataset/44k/luo/Voice_38.wav|luo
+./dataset/44k/luo/Voice_39.wav|luo
+./dataset/44k/luo/Voice_4.wav|luo
+./dataset/44k/luo/Voice_40.wav|luo
+./dataset/44k/luo/Voice_41.wav|luo
+./dataset/44k/luo/Voice_42.wav|luo
+./dataset/44k/luo/Voice_43.wav|luo
+./dataset/44k/luo/Voice_44.wav|luo
+./dataset/44k/luo/Voice_45.wav|luo
+./dataset/44k/luo/Voice_46.wav|luo
+./dataset/44k/luo/Voice_47.wav|luo
+./dataset/44k/luo/Voice_48.wav|luo
+./dataset/44k/luo/Voice_49.wav|luo
+./dataset/44k/luo/Voice_5.wav|luo
+./dataset/44k/luo/Voice_50.wav|luo
+./dataset/44k/luo/Voice_51.wav|luo
+./dataset/44k/luo/Voice_52.wav|luo
+./dataset/44k/luo/Voice_53.wav|luo
+./dataset/44k/luo/Voice_54.wav|luo
+./dataset/44k/luo/Voice_55.wav|luo
+./dataset/44k/luo/Voice_56.wav|luo
+./dataset/44k/luo/Voice_57.wav|luo
+./dataset/44k/luo/Voice_58.wav|luo
+./dataset/44k/luo/Voice_59.wav|luo
+./dataset/44k/luo/Voice_6.wav|luo
+./dataset/44k/luo/Voice_60.wav|luo
+./dataset/44k/luo/Voice_61.wav|luo
+./dataset/44k/luo/Voice_62.wav|luo
+./dataset/44k/luo/Voice_63.wav|luo
+./dataset/44k/luo/Voice_64.wav|luo
+./dataset/44k/luo/Voice_65.wav|luo
+./dataset/44k/luo/Voice_66.wav|luo
+./dataset/44k/luo/Voice_67.wav|luo
+./dataset/44k/luo/Voice_68.wav|luo
+./dataset/44k/luo/Voice_69.wav|luo
+./dataset/44k/luo/Voice_7.wav|luo
+./dataset/44k/luo/Voice_70.wav|luo
+./dataset/44k/luo/Voice_71.wav|luo
+./dataset/44k/luo/Voice_72.wav|luo
+./dataset/44k/luo/Voice_73.wav|luo
+./dataset/44k/luo/Voice_74.wav|luo
+./dataset/44k/luo/Voice_75.wav|luo
+./dataset/44k/luo/Voice_76.wav|luo
+./dataset/44k/luo/Voice_77.wav|luo
+./dataset/44k/luo/Voice_78.wav|luo
+./dataset/44k/luo/Voice_79.wav|luo
+./dataset/44k/luo/Voice_8.wav|luo
+./dataset/44k/luo/Voice_80.wav|luo
+./dataset/44k/luo/Voice_81.wav|luo
+./dataset/44k/luo/Voice_82.wav|luo
+./dataset/44k/luo/Voice_83.wav|luo
+./dataset/44k/luo/Voice_84.wav|luo
+./dataset/44k/luo/Voice_85.wav|luo
+./dataset/44k/luo/Voice_86.wav|luo
+./dataset/44k/luo/Voice_87.wav|luo
+./dataset/44k/luo/Voice_88.wav|luo
+./dataset/44k/luo/Voice_89.wav|luo
+./dataset/44k/luo/Voice_9.wav|luo
+./dataset/44k/luo/Voice_90.wav|luo
+./dataset/44k/luo/Voice_91.wav|luo
+./dataset/44k/luo/Voice_92.wav|luo
+./dataset/44k/luo/Voice_93.wav|luo
+./dataset/44k/luo/Voice_94.wav|luo

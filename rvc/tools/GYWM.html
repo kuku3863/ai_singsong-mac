@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes, viewport-fit=cover">
+  <title>模型工坊 · AI语音创作一站式平台</title>
+  <!-- 字体与图标 -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+  <style>
+    /* 确保滚动正常 */
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      overflow-x: hidden;
+      overflow-y: auto;
+      scroll-behavior: smooth;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #fafbff;
+      color: #0b0f1c;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      min-height: 100vh;
+      position: relative;
+    }
+
+    .container {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 0 24px;
+      position: relative;
+      z-index: 5;
+    }
+
+    /* 渐变与装饰 */
+    .bg-glow {
+      position: relative;
+      width: 100%;
+    }
+
+    .bg-glow::before {
+      content: '';
+      position: fixed;      /* 改为fixed，不影响滚动，仅作背景 */
+      top: -20%;
+      left: -10%;
+      width: 70%;
+      height: 70%;
+      background: radial-gradient(circle at 30% 20%, rgba(99, 102, 241, 0.12), transparent 70%);
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    .section {
+      position: relative;
+      z-index: 2;
+      padding: 64px 0;
+    }
+
+    .section-title {
+      font-size: 2.2rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 16px;
+      background: linear-gradient(135deg, #1e1b4b 0%, #312e81 80%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .section-sub {
+      font-size: 1.1rem;
+      color: #4b5563;
+      margin-bottom: 48px;
+      max-width: 720px;
+    }
+
+    /* 按钮 */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 28px;
+      border-radius: 60px;
+      font-weight: 600;
+      font-size: 1rem;
+      transition: all 0.2s ease;
+      cursor: pointer;
+      border: none;
+      background: white;
+      color: #1e1b4b;
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.03), 0 2px 6px rgba(0, 0, 0, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.5);
+      backdrop-filter: blur(4px);
+      text-decoration: none;
+    }
+
+    .btn-primary {
+      background: linear-gradient(145deg, #4f46e5, #7c3aed);
+      color: white;
+      box-shadow: 0 12px 24px -8px rgba(79, 70, 229, 0.35);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+
+    .btn-primary i {
+      color: white;
+    }
+
+    .btn-outline {
+      background: rgba(255, 255, 255, 0.7);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(255, 255, 255, 0.8);
+    }
+
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 20px 30px -8px rgba(79, 70, 229, 0.25);
+    }
+
+    /* 卡片 */
+    .card {
+      background: rgba(255, 255, 255, 0.85);
+      backdrop-filter: blur(12px);
+      border-radius: 32px;
+      padding: 28px 24px;
+      box-shadow: 0 20px 35px -8px rgba(0, 0, 0, 0.05), 0 0 0 1px rgba(255, 255, 255, 0.8) inset;
+      transition: all 0.2s;
+      border: 1px solid rgba(255, 255, 255, 0.6);
+      height: 100%;
+    }
+
+    .card:hover {
+      box-shadow: 0 28px 40px -12px rgba(79, 70, 229, 0.12), 0 0 0 1px rgba(99, 102, 241, 0.2) inset;
+      background: rgba(255, 255, 255, 0.95);
+    }
+
+    .stat-number {
+      font-size: 2.8rem;
+      font-weight: 800;
+      background: linear-gradient(145deg, #1e1b4b, #4c1d95);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      line-height: 1.2;
+    }
+
+    .feature-icon {
+      width: 52px;
+      height: 52px;
+      background: linear-gradient(145deg, #ede9fe, #ddd6fe);
+      border-radius: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #4f46e5;
+      font-size: 26px;
+      margin-bottom: 24px;
+      box-shadow: 0 6px 12px -6px rgba(79, 70, 229, 0.2);
+    }
+
+    /* 网格 */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 24px;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+    }
+
+    .grid-4 {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 24px;
+    }
+
+    /* 导航 */
+    .navbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 20px 0;
+    }
+
+    .logo {
+      font-weight: 800;
+      font-size: 1.8rem;
+      letter-spacing: -0.02em;
+      background: linear-gradient(135deg, #1e1b4b, #4f46e5);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .logo span {
+      font-weight: 500;
+      font-size: 0.9rem;
+      color: #6b7280;
+      margin-left: 6px;
+      background: none;
+      -webkit-background-clip: unset;
+      background-clip: unset;
+      color: #6b7280;
+    }
+
+    .badge {
+      background: #e0e7ff;
+      color: #3730a3;
+      padding: 4px 12px;
+      border-radius: 40px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      display: inline-block;
+    }
+
+    .tag {
+      background: #f3f4f6;
+      border-radius: 40px;
+      padding: 4px 14px;
+      font-size: 0.8rem;
+      color: #374151;
+    }
+
+    hr {
+      border: none;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, #cbd5e1, transparent);
+      margin: 32px 0;
+    }
+
+    /* 响应式 */
+    @media (max-width: 900px) {
+      .grid-2, .grid-3, .grid-4 {
+        grid-template-columns: 1fr;
+        gap: 20px;
+      }
+      .section-title {
+        font-size: 1.9rem;
+      }
+    }
+
+    /* 列表样式 */
+    .check-list {
+      list-style: none;
+    }
+    .check-list li {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 16px;
+      align-items: flex-start;
+    }
+    .check-list i {
+      color: #4f46e5;
+      font-size: 1.2rem;
+      margin-top: 3px;
+    }
+
+    .footer {
+      text-align: center;
+      padding: 40px 0;
+      color: #6b7280;
+      border-top: 1px solid rgba(0,0,0,0.05);
+      font-size: 0.9rem;
+      background: rgba(255,255,255,0.3);
+      backdrop-filter: blur(4px);
+      position: relative;
+      z-index: 5;
+    }
+
+    .highlight {
+      background: linear-gradient(120deg, #fef9c3 0%, #fef9c3 40%, transparent 80%);
+      padding: 0 6px;
+      font-weight: 600;
+    }
+
+    /* 确保内容不溢出且可滚动 */
+    .wrapper {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+  </style>
+</head>
+<body>
+  <div class="bg-glow"></div>
+  <div class="wrapper">
+    <div class="container" style="flex:1;">
+      <!-- 导航栏 -->
+      <nav class="navbar">
+        <div class="logo">
+          模型工坊 <span>mxgf.cc</span>
+        </div>
+        <div>
+          <span class="badge"><i class="fas fa-microchip"></i> v5.2 优化版</span>
+          <span class="tag" style="margin-left: 12px;"><i class="far fa-calendar-alt"></i> 2026·焕新</span>
+        </div>
+      </nav>
+
+      <!-- Hero 区域 -->
+      <div style="padding: 40px 0 20px;">
+        <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 40px;">
+          <div style="flex: 1.2;">
+            <div style="margin-bottom: 16px;">
+              <span class="badge" style="background: #4f46e5; color: white;"><i class="fas fa-bolt"></i> 国内领先·AI语音创作</span>
+            </div>
+            <h1 style="font-size: 3.2rem; font-weight: 800; line-height: 1.2; letter-spacing: -0.03em; background: linear-gradient(145deg, #0f172a, #312e81); -webkit-background-clip: text; background-clip: text; color: transparent;">
+              让AI语音创作<br>真正零门槛
+            </h1>
+            <p style="font-size: 1.2rem; color: #374151; margin: 24px 0 32px; max-width: 550px;">
+              自2023年创立，专注RVC/SVC/GPT-SoVITS技术落地。600+精调模型、自研整合包，解压即用，一键出片。
+            </p>
+            <div style="display: flex; gap: 16px; flex-wrap: wrap;">
+              <a class="btn btn-primary"><i class="fas fa-download"></i> 免费下载整合包</a>
+              <a class="btn btn-outline"><i class="fas fa-headphones-alt"></i> 在线试听模型</a>
+            </div>
+          </div>
+          <div style="flex: 0.9; display: flex; justify-content: center;">
+            <div style="background: radial-gradient(circle at 70% 30%, rgba(99,102,241,0.2), transparent); padding: 20px; border-radius: 48px;">
+              <div style="background: rgba(255,255,255,0.4); backdrop-filter: blur(16px); border-radius: 36px; padding: 24px 36px; box-shadow: 0 30px 40px -20px rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.6);">
+                <i class="fas fa-wave-square" style="font-size: 48px; color: #4f46e5; opacity: 0.8; margin-bottom: 12px;"></i>
+                <div style="display: flex; gap: 32px;">
+                  <div><span class="stat-number">600+</span><br><span style="color: #4b5563;">精调模型</span></div>
+                  <div><span class="stat-number">30+</span><br><span style="color: #4b5563;">工具集成</span></div>
+                  <div><span class="stat-number">∞</span><br><span style="color: #4b5563;">保姆教程</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 核心优势卡片 -->
+      <div class="section" style="padding-top: 32px;">
+        <div class="grid-3">
+          <div class="card">
+            <div class="feature-icon"><i class="fas fa-database"></i></div>
+            <h3 style="font-size: 1.6rem; font-weight: 700; margin-bottom: 12px;">600+ 模型全覆盖</h3>
+            <p style="color: #4b5563; margin-bottom: 16px;">二次元·影视·游戏·真人·陪玩48K高采样，在线试听，所听即所得。</p>
+            <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+              <span class="tag">赛马娘全角色</span><span class="tag">椎名真昼</span><span class="tag">新三国</span><span class="tag">蜡笔小新</span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="feature-icon"><i class="fas fa-toolbox"></i></div>
+            <h3 style="font-size: 1.6rem; font-weight: 700; margin-bottom: 12px;">全流程工具免费</h3>
+            <p style="color: #4b5563;">RVC整合包 · UVR5.6 · w-okada · Replay汉化 · 切片工具 · 加密音乐解码器，一站备齐。</p>
+          </div>
+          <div class="card">
+            <div class="feature-icon"><i class="fas fa-graduation-cap"></i></div>
+            <h3 style="font-size: 1.6rem; font-weight: 700; margin-bottom: 12px;">保姆级教程体系</h3>
+            <p style="color: #4b5563;">图文+视频，覆盖本地部署、云端推理、实时变声、模型训练，零基础直达精通。</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 整合包专属亮点 -->
+      <div class="section">
+        <h2 class="section-title">模型工坊专属 RVC WebUI 整合包</h2>
+        <p class="section-sub">历经 v3.1、v5.1、v5.2 迭代，重构操作逻辑，彻底解决原版繁琐、报错、批量低效痛点。</p>
+        
+        <div class="grid-2" style="margin-top: 24px;">
+          <div class="card" style="padding: 24px;">
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+              <span style="background: #4f46e5; width: 36px; height: 36px; border-radius: 14px; display: flex; align-items: center; justify-content: center; color: white;"><i class="fas fa-play"></i></span>
+              <h3 style="font-size: 1.35rem; font-weight: 700;">启动与主界面 · 极简零门槛</h3>
+            </div>
+            <p>双击「启动AI翻唱音色替换」bat，自动加载环境，无需配置Python/CUDA。三栏式布局，核心功能一目了然，支持黑夜/白天自适应。</p>
+          </div>
+          <div class="card" style="padding: 24px;">
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+              <span style="background: #7c3aed; width: 36px; height: 36px; border-radius: 14px; display: flex; align-items: center; justify-content: center; color: white;"><i class="fas fa-upload"></i></span>
+              <h3 style="font-size: 1.35rem; font-weight: 700;">模型管理 · 拖拽上传+分类</h3>
+            </div>
+            <p>一键上传.pth及index，自动归档；支持自定义标签（动漫/游戏/真人），模型卡片展示采样率与场景，告别手动复制文件夹。</p>
+          </div>
+          <div class="card" style="padding: 24px;">
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+              <span style="background: #2563eb; width: 36px; height: 36px; border-radius: 14px; display: flex; align-items: center; justify-content: center; color: white;"><i class="fas fa-music"></i></span>
+              <h3 style="font-size: 1.35rem; font-weight: 700;">音频处理 · 全格式+双轨试听</h3>
+            </div>
+            <p>拖拽上传，原生支持MP3/FLAC及.ncm/.qmc等加密格式。转换后双播放器对比试听，预设“标准翻唱/实时变声/高保真配音”。</p>
+          </div>
+          <div class="card" style="padding: 24px;">
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+              <span style="background: #059669; width: 36px; height: 36px; border-radius: 14px; display: flex; align-items: center; justify-content: center; color: white;"><i class="fas fa-tasks"></i></span>
+              <h3 style="font-size: 1.35rem; font-weight: 700;">智能任务调度 · 批量不卡顿</h3>
+            </div>
+            <p>可视化队列，显示解码/分离/转换/混音进度及剩余时间。支持暂停、插队，完成弹窗+声音提醒。</p>
+          </div>
+          <div class="card" style="padding: 24px;">
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+              <span style="background: #d97706; width: 36px; height: 36px; border-radius: 14px; display: flex; align-items: center; justify-content: center; color: white;"><i class="fas fa-magic"></i></span>
+              <h3 style="font-size: 1.35rem; font-weight: 700;">一键全流程翻唱 · 30秒出片</h3>
+            </div>
+            <p>上传原曲自动完成解码→分离→去混响→变调→音色转换→智能混音。支持批量导出MP3/WAV/FLAC。</p>
+          </div>
+          <div class="card" style="padding: 24px;">
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+              <span style="background: #b45309; width: 36px; height: 36px; border-radius: 14px; display: flex; align-items: center; justify-content: center; color: white;"><i class="fas fa-sliders-h"></i></span>
+              <h3 style="font-size: 1.35rem; font-weight: 700;">独立AI自动混音</h3>
+            </div>
+            <p>分别上传干声+伴奏，选择风格（流行/抒情/摇滚等），自动EQ平衡、人声突出、立体声增强，媲美专业后期。</p>
+          </div>
+          <div class="card" style="padding: 24px;">
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+              <span style="background: #7f1d1d; width: 36px; height: 36px; border-radius: 14px; display: flex; align-items: center; justify-content: center; color: white;"><i class="fas fa-tools"></i></span>
+              <h3 style="font-size: 1.35rem; font-weight: 700;">内置工具集 · 一站式</h3>
+            </div>
+            <p>加密音乐解码、智能音频切片(2-10s)、±12半音变调、去混响(UVR-De-Echo)、音量标准化，无需额外安装。</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 技术优势 -->
+      <div class="section" style="padding-top: 24px;">
+        <div style="display: flex; flex-wrap: wrap; gap: 40px;">
+          <div style="flex: 2; min-width: 280px;">
+            <h2 class="section-title" style="font-size: 1.9rem;">整合包技术优势</h2>
+            <ul class="check-list" style="margin-top: 24px;">
+              <li><i class="fas fa-check-circle"></i> <strong>免环境配置</strong> — 所有依赖库内置，解压即用，告别Python/CUDA劝退。</li>
+              <li><i class="fas fa-check-circle"></i> <strong>全格式原生支持</strong> — 内置解码器，直接导入.ncm/.qmc/.kgm等平台加密歌曲。</li>
+              <li><i class="fas fa-check-circle"></i> <strong>硬件深度优化</strong> — NVIDIA 20/30/40系CUDA加速，推理速度提升30%+；CPU模式低配可用。</li>
+              <li><i class="fas fa-check-circle"></i> <strong>智能错误检测</strong> — 中文路径、显存不足、模型损坏等均有明确提示与解决方案。</li>
+              <li><i class="fas fa-check-circle"></i> <strong>持续免费更新</strong> — 同步官方更新，根据反馈优化功能，所有用户免费升级。</li>
+            </ul>
+          </div>
+          <div style="flex: 1.2; background: rgba(255,255,255,0.5); backdrop-filter: blur(8px); border-radius: 32px; padding: 28px; border: 1px solid rgba(255,255,255,0.7);">
+            <i class="fas fa-shield-alt" style="font-size: 32px; color: #4f46e5; margin-bottom: 16px;"></i>
+            <h3 style="font-size: 1.5rem; font-weight: 700; margin-bottom: 16px;">版权声明·使用规范</h3>
+            <p style="color: #374151; margin-bottom: 16px;">模型工坊所有AI声音模型由团队及合作工作室制作，仅限个人学习、交流、非盈利二创。平台尊重原作版权与角色形象，不授予商业使用授权。</p>
+            <p style="color: #4b5563; font-size: 0.95rem; border-left: 4px solid #a5b4fc; padding-left: 18px;">严禁用于诈骗、侵权等违法活动。技术向善，创作有光。</p>
+            <div style="margin-top: 24px;">
+              <span class="badge" style="background: #e0e7ff;"><i class="far fa-copyright"></i> 模型工坊 mxgf.cc</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 快速入口 -->
+      <hr>
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px; padding: 24px 0 48px;">
+        <div>
+          <h3 style="font-weight: 700; font-size: 1.4rem;">📚 从入门到精通，保姆级陪伴</h3>
+          <p style="color: #4b5563;">本地部署 · 云端推理 · 实时变声 · 自定义训练，图文+视频全覆盖。</p>
+        </div>
+        <div style="display: flex; gap: 12px;">
+          <a class="btn btn-outline"><i class="fab fa-bilibili"></i> 视频教程</a>
+          <a class="btn btn-primary"><i class="fas fa-book-open"></i> 文档中心</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- 底部 -->
+    <div class="footer">
+      <div class="container">
+        <p style="margin-bottom: 8px;"><i class="fas fa-microphone-alt"></i> 模型工坊 mxgf.cc — 国内领先的AI语音创作平台</p>
+        <p style="opacity: 0.7;">RVC · SVC · GPT-SoVITS · 声音克隆 · AI翻唱 · 实时变声 · 一站式解决方案</p>
+        <p style="margin-top: 20px; font-size: 0.8rem;">© 2023-2026 模型工坊 | 本页面仅作品牌展示，工具与模型请访问官网</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 确保滚动无问题 -->
+  <style>
+    @media (prefers-reduced-motion: no-preference) {
+      .card, .btn {
+        transition: all 0.25s cubic-bezier(0.2, 0, 0, 1);
+      }
+    }
+    i {
+      margin-right: 4px;
+    }
+    .btn i {
+      margin-right: 6px;
+    }
+    /* 解决某些环境滚动失效 */
+    .wrapper {
+      display: block;
+      width: 100%;
+    }
+    body {
+      overflow-y: auto !important;
+      height: auto !important;
+    }
+  </style>
+</body>
+</html>

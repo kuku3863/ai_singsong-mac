@@ -1,0 +1,2 @@
+./dataset/44k/junjun/qingzanggaoyuan_6.wav
+./dataset/44k/junjun/zuoshouzhiyue_6.wav

@@ -1,0 +1,2 @@
+./dataset/44k/tian/ffsddsfss (93).wav
+./dataset/44k/tian/ffsddsfss (64).wav

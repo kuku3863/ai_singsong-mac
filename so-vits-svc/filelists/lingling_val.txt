@@ -1,0 +1,2 @@
+./dataset/44k/lingling/luyin_10.wav
+./dataset/44k/lingling/alsjhw_10.wav

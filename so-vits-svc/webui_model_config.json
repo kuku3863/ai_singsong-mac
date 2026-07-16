@@ -1,0 +1,10 @@
+{
+  "project_name": "44k",
+  "model_path": "logs/44k/G_50400.pth",
+  "diff_model_path": "logs/44k/diffusion/model_100000.pt",
+  "diff_config_path": "configs/diffusion.yaml",
+  "spk_list": [
+    "luo"
+  ],
+  "timestamp": 1780764647.711158
+}

@@ -1,0 +1,41 @@
+# RVC AI翻唱 - Mac (Apple Silicon) 推理依赖
+# Requirements for RVC voice conversion on macOS with MPS GPU acceleration
+
+# Core
+torch>=2.0.0
+torchaudio>=2.0.0
+numpy>=1.21.0
+scipy>=1.7.0
+librosa>=0.9.0
+soundfile>=0.11.0
+
+# F0 (pitch) extraction
+pyworld>=0.3.0
+praat-parselmouth>=1.0.0
+torchcrepe>=0.0.0
+fcpe>=0.0.1
+
+# Feature extraction & models
+fairseq>=0.12.0
+faiss-cpu>=1.7.0
+scikit-learn
+
+# ONNX runtime (for RMVPE ONNX model)
+onnxruntime
+
+# Web UI (Gradio)
+gradio>=3.0.0
+
+# Audio processing
+resampy>=0.2.0
+tqdm>=4.62.0
+pyyaml>=6.0
+
+# Utilities
+python-dotenv
+matplotlib
+tensorboard
+ml-collections>=1.0.0
+einops>=0.8.0
+beartype>=0.18.0
+rotary-embedding-torch>=0.8.0
