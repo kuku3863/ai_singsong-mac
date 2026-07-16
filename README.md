@@ -35,7 +35,7 @@
 
 ### 系统信息
 
-![系统信息](docs/screenshots/04-info.jpg)
+![系统信息](docs/screenshots/04-info-v2.jpg)
 
 ## 启动方式
 
