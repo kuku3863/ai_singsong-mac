@@ -1153,7 +1153,7 @@ def create_ui():
                 |------|------|
                 | PyTorch | {torch.__version__} |
                 | 推理设备 | **{DEVICE.upper()}** |
-                | MPS (Apple GPU) | {'✅ 可用' if DEVICE == 'mps' else '❌ 不可用'} |
+                | MPS (Apple GPU) | {'✅ 可用' if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available() else '❌ 不可用'} |
                 | CUDA | {'✅ 可用' if torch.cuda.is_available() else '❌ 不可用'} |
                 | RVC 模型 | {rvc_n} 个 (rvc/assets/weights/) |
                 | SVC 模型 | {svc_n} 个 (so-vits-svc/logs/44k/) |
